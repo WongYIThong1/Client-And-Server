@@ -56,6 +56,9 @@ if (useTLS) {
 // 存储已认证的连接
 const authenticatedConnections = new Map();
 
+// 存储客户端系统信息（与连接关联）
+const clientSystemInfo = new Map();
+
 // Token黑名单（用于撤销token）
 const tokenBlacklist = new Set();
 
@@ -170,8 +173,12 @@ wss.on('connection', (ws, req) => {
           return;
         }
 
+        // 清理API Key（去除首尾空格）
+        const cleanApiKey = apiKey.trim();
+        console.log(`Received API Key for verification (length: ${cleanApiKey.length})`);
+
         // 验证API Key
-        const verification = await verifyApiKey(apiKey);
+        const verification = await verifyApiKey(cleanApiKey);
         
         if (verification.valid) {
           isAuthenticated = true;
@@ -376,6 +383,71 @@ wss.on('connection', (ws, req) => {
         }
       }
 
+      // 处理system_info消息（客户端首次心跳包）
+      if (data.type === 'system_info') {
+        // 检查是否已认证
+        if (!isAuthenticated) {
+          ws.send(JSON.stringify({
+            type: 'error',
+            message: 'Authentication required before sending system info'
+          }));
+          return;
+        }
+
+        const systemInfo = {
+          ip: data.ip || 'unknown',
+          ram: data.ram || 'unknown',
+          cpuCores: data.cpuCores || 0,
+          receivedAt: Date.now()
+        };
+        
+        // 存储系统信息
+        clientSystemInfo.set(ws, systemInfo);
+        
+        const connInfo = authenticatedConnections.get(ws);
+        const userId = connInfo ? connInfo.userId : 'unknown';
+        console.log(`Received system_info from user ${userId}:`, systemInfo);
+        
+        // 发送确认消息
+        ws.send(JSON.stringify({
+          type: 'system_info_received',
+          message: 'System information received'
+        }));
+        
+        return;
+      }
+
+      // 处理heartbeat消息（客户端定期心跳包）
+      if (data.type === 'heartbeat') {
+        // 检查是否已认证
+        if (!isAuthenticated) {
+          ws.send(JSON.stringify({
+            type: 'error',
+            message: 'Authentication required before sending heartbeat'
+          }));
+          return;
+        }
+
+        const sysInfo = clientSystemInfo.get(ws);
+        const connInfo = authenticatedConnections.get(ws);
+        const userId = connInfo ? connInfo.userId : 'unknown';
+        
+        if (sysInfo) {
+          console.log(`Received heartbeat from user ${userId} (IP: ${sysInfo.ip})`);
+        } else {
+          console.log(`Received heartbeat from user ${userId} (no system info)`);
+        }
+        
+        // 发送确认消息
+        ws.send(JSON.stringify({
+          type: 'heartbeat_received',
+          message: 'Heartbeat received',
+          timestamp: Date.now()
+        }));
+        
+        return;
+      }
+
       // 处理其他消息类型
       if (data.type === 'data') {
         // 处理实时数据更新请求
@@ -409,6 +481,12 @@ wss.on('connection', (ws, req) => {
       // revokeToken(connInfo.refreshToken);
     }
     authenticatedConnections.delete(ws);
+    // 清除系统信息
+    const sysInfo = clientSystemInfo.get(ws);
+    if (sysInfo) {
+      console.log(`Cleared system info for disconnected client (IP: ${sysInfo.ip})`);
+    }
+    clientSystemInfo.delete(ws);
   });
 
   // 处理错误
@@ -418,6 +496,7 @@ wss.on('connection', (ws, req) => {
       clearInterval(heartbeatInterval);
     }
     authenticatedConnections.delete(ws);
+    clientSystemInfo.delete(ws);
   });
 });
 
