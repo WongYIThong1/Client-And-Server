@@ -1,0 +1,9 @@
+# 环境变量配置示例
+# 复制此文件内容到 .env 文件中
+
+SUPABASE_URL=https://kicjyrmadhkozwganhbi.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtpY2p5cm1hZGhrb3p3Z2FuaGJpIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2MzUyOTkwMiwiZXhwIjoyMDc5MTA1OTAyfQ.NSCaR9rZaqd9NOtK46sAANpPhHcM1xaHD-5gWxvS9L0
+JWT_SECRET=your-secret-key-change-this-in-production
+PORT=5000
+
+
