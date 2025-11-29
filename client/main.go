@@ -8,9 +8,11 @@ import (
 	"log"
 	"net"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -18,9 +20,11 @@ import (
 )
 
 const (
-	serverURL = "ws://localhost:5000"
-	// 如果使用WSS，取消注释下面这行并注释上面那行
-	// serverURL = "wss://localhost:5000"
+	// 服务器地址：通过域名连接，nginx会代理到后端
+	// 注意：不要使用IP地址或指定5000端口，应通过域名和标准端口（80/443）连接
+	serverURL = "ws://api.sqlbots.online"
+	// 如果使用WSS（HTTPS），取消注释下面这行并注释上面那行
+	// serverURL = "wss://api.sqlbots.online"
 )
 
 var (
@@ -38,9 +42,10 @@ type Message struct {
 	Message      string      `json:"message,omitempty"`
 	Data         interface{} `json:"data,omitempty"`
 	// System info fields
-	IP       string `json:"ip,omitempty"`
-	RAM      string `json:"ram,omitempty"`
-	CPUCores int    `json:"cpuCores,omitempty"`
+	IP          string `json:"ip,omitempty"`
+	RAM         string `json:"ram,omitempty"`
+	CPUCores    int    `json:"cpuCores,omitempty"`
+	MachineName string `json:"machineName,omitempty"`
 }
 
 // 显示ASCII艺术字
@@ -57,8 +62,8 @@ func displayBanner() {
 	fmt.Print(banner)
 }
 
-// 连接WebSocket服务器
-func connectToServer() (*websocket.Conn, error) {
+// 连接WebSocket服务器（单次尝试）
+func connectToServerOnce() (*websocket.Conn, error) {
 	dialer := websocket.Dialer{
 		HandshakeTimeout: 10 * time.Second,
 	}
@@ -76,6 +81,39 @@ func connectToServer() (*websocket.Conn, error) {
 	}
 
 	return conn, nil
+}
+
+// 连接WebSocket服务器（带重试机制，最多尝试3次）
+func connectToServer() (*websocket.Conn, error) {
+	const maxRetries = 3
+	var conn *websocket.Conn
+	var err error
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		fmt.Printf("正在尝试连接服务器 (第 %d/%d 次)...\n", attempt, maxRetries)
+
+		conn, err = connectToServerOnce()
+		if err == nil {
+			// 连接成功
+			if attempt > 1 {
+				fmt.Printf("连接成功！(第 %d 次尝试)\n", attempt)
+			}
+			return conn, nil
+		}
+
+		// 连接失败
+		fmt.Printf("连接失败: %v\n", err)
+
+		// 如果不是最后一次尝试，等待后重试
+		if attempt < maxRetries {
+			waitTime := time.Duration(attempt) * 2 * time.Second // 递增等待时间：2秒、4秒
+			fmt.Printf("等待 %v 后重试...\n", waitTime)
+			time.Sleep(waitTime)
+		}
+	}
+
+	// 所有尝试都失败了
+	return nil, fmt.Errorf("连接失败：已尝试 %d 次，均未成功连接到服务器 %s", maxRetries, serverURL)
 }
 
 // 获取API Key保存路径
@@ -175,12 +213,22 @@ func getCPUCores() int {
 	return runtime.NumCPU()
 }
 
+// 获取电脑名字
+func getMachineName() string {
+	hostname, err := os.Hostname()
+	if err != nil {
+		return "unknown"
+	}
+	return hostname
+}
+
 // 获取系统信息
-func getSystemInfo() (string, string, int) {
+func getSystemInfo() (string, string, int, string) {
 	ip := getLocalIP()
 	ram := getRAMInfo()
 	cores := getCPUCores()
-	return ip, ram, cores
+	machineName := getMachineName()
+	return ip, ram, cores, machineName
 }
 
 // 发送消息
@@ -220,17 +268,18 @@ func handleMessage(conn *websocket.Conn, message []byte) {
 		fmt.Println("已连接到服务器，等待实时数据更新...")
 
 		// 立即发送系统信息心跳包
-		ip, ram, cores := getSystemInfo()
+		ip, ram, cores, machineName := getSystemInfo()
 		systemInfoMsg := Message{
-			Type:     "system_info",
-			IP:       ip,
-			RAM:      ram,
-			CPUCores: cores,
+			Type:        "system_info",
+			IP:          ip,
+			RAM:         ram,
+			CPUCores:    cores,
+			MachineName: machineName,
 		}
 		if err := sendMessage(conn, systemInfoMsg); err != nil {
 			log.Printf("发送系统信息失败: %v", err)
 		} else {
-			fmt.Printf("\n[系统信息已发送] IP: %s, RAM: %s, CPU核心数: %d\n", ip, ram, cores)
+			fmt.Printf("\n[系统信息已发送] IP: %s, RAM: %s, CPU核心数: %d, 电脑名字: %s\n", ip, ram, cores, machineName)
 		}
 
 	case "system_info_received":
@@ -238,6 +287,9 @@ func handleMessage(conn *websocket.Conn, message []byte) {
 
 	case "heartbeat_received":
 		// 静默处理，不显示消息（避免刷屏）
+
+	case "disconnect_ack":
+		fmt.Println("[服务器已确认断开连接]")
 
 	case "auth_failed":
 		fmt.Printf("\n✗ 认证失败: %s\n", msg.Message)
@@ -282,11 +334,10 @@ func main() {
 	// 显示ASCII艺术字
 	displayBanner()
 
-	// 尝试连接服务器
-	fmt.Println("正在连接到服务器...")
+	// 尝试连接服务器（带重试机制，最多3次）
 	conn, err := connectToServer()
 	if err != nil {
-		log.Fatalf("无法连接到服务器: %v\n请确保服务器正在运行在 %s", err, serverURL)
+		log.Fatalf("\n无法连接到服务器: %v\n请确保服务器正在运行在 %s", err, serverURL)
 	}
 	defer conn.Close()
 
@@ -349,6 +400,10 @@ func main() {
 		}
 	}()
 
+	// 设置信号处理，捕获中断信号（Ctrl+C）
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
 	// 主循环：处理消息和心跳
 	// 每10分钟发送一次heartbeat
 	heartbeatTicker := time.NewTicker(10 * time.Minute)
@@ -365,6 +420,25 @@ func main() {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 				log.Printf("WebSocket错误: %v", err)
 			}
+			return
+
+		case <-sigChan:
+			// 收到中断信号，优雅关闭
+			fmt.Println("\n[收到关闭信号，正在优雅断开连接...]")
+			if isAuthenticated {
+				// 发送disconnect消息
+				disconnectMsg := Message{
+					Type: "disconnect",
+				}
+				if err := sendMessage(conn, disconnectMsg); err != nil {
+					log.Printf("发送断开消息失败: %v", err)
+				} else {
+					fmt.Println("[断开消息已发送，等待服务器确认...]")
+					// 等待一小段时间让服务器处理
+					time.Sleep(500 * time.Millisecond)
+				}
+			}
+			conn.Close()
 			return
 
 		case <-heartbeatTicker.C:

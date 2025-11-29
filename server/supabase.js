@@ -74,5 +74,244 @@ export async function verifyApiKey(apiKey) {
   }
 }
 
+/**
+ * 保存或更新机器信息到machines表
+ * @param {string} userId - 用户ID
+ * @param {string} apiKey - API Key
+ * @param {Object} machineInfo - 机器信息
+ * @param {string} machineInfo.ip - IP地址
+ * @param {string} machineInfo.ram - 内存信息
+ * @param {number} machineInfo.cpuCores - CPU核心数
+ * @returns {Promise<{success: boolean, error?: string}>}
+ */
+export async function saveOrUpdateMachine(userId, apiKey, machineInfo) {
+  try {
+    console.log(`[saveOrUpdateMachine] Called with userId=${userId}, apiKey=${apiKey ? 'present' : 'missing'}, ip=${machineInfo?.ip}`);
+    
+    if (!userId || !apiKey || !machineInfo || !machineInfo.ip) {
+      console.error('[saveOrUpdateMachine] Invalid parameters:', { userId, hasApiKey: !!apiKey, hasMachineInfo: !!machineInfo, ip: machineInfo?.ip });
+      return { success: false, error: 'Invalid parameters' };
+    }
+
+    const { ip, ram, cpuCores, machineName } = machineInfo;
+
+    // 首先尝试查找现有记录（根据user_id和ip）
+    const { data: existingMachine, error: findError } = await supabase
+      .from('machines')
+      .select('id')
+      .eq('user_id', userId)
+      .eq('ip', ip)
+      .maybeSingle();
+
+    if (findError && findError.code !== 'PGRST116') {
+      // PGRST116是"未找到记录"的错误，这是正常的
+      console.error('Error finding machine:', findError);
+      return { success: false, error: findError.message };
+    }
+
+    if (existingMachine) {
+      // 更新现有记录（不更新name字段，保留原有的电脑名字）
+      const machineData = {
+        user_id: userId,
+        apikey: apiKey,
+        ip: ip,
+        ram: ram || null,
+        core: cpuCores || null,
+        // 不更新name字段，保留数据库中的原有值
+        status: 'Active',
+        last_heartbeat: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      };
+      
+      const { error: updateError } = await supabase
+        .from('machines')
+        .update(machineData)
+        .eq('id', existingMachine.id);
+
+      if (updateError) {
+        console.error('Error updating machine:', updateError);
+        return { success: false, error: updateError.message };
+      }
+
+      // 即使更新现有机器，也检查并更新users表中的machine_ip字段（如果IP不在其中）
+      console.log(`[saveOrUpdateMachine] Machine exists, calling updateUserMachineIp for user ${userId}, IP ${ip}`);
+      await updateUserMachineIp(userId, ip);
+
+      console.log(`Machine updated: user ${userId}, IP ${ip}`);
+      return { success: true };
+    } else {
+      // 创建新记录（包含电脑名字）
+      const machineData = {
+        user_id: userId,
+        apikey: apiKey,
+        ip: ip,
+        ram: ram || null,
+        core: cpuCores || null,
+        name: machineName || null, // 只在创建新记录时保存电脑名字
+        status: 'Active',
+        last_heartbeat: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      };
+      
+      const { error: insertError } = await supabase
+        .from('machines')
+        .insert(machineData);
+
+      if (insertError) {
+        console.error('Error inserting machine:', insertError);
+        return { success: false, error: insertError.message };
+      }
+
+      // 更新users表中的machine_ip字段
+      console.log(`[saveOrUpdateMachine] Machine created, calling updateUserMachineIp for user ${userId}, IP ${ip}`);
+      await updateUserMachineIp(userId, ip);
+
+      console.log(`Machine created: user ${userId}, IP ${ip}`);
+      return { success: true };
+    }
+  } catch (error) {
+    console.error('Error in saveOrUpdateMachine:', error);
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * 更新users表中的machine_ip字段
+ * 如果machine_ip_1为空，写入machine_ip_1
+ * 如果machine_ip_1已有值但machine_ip_2为空，写入machine_ip_2
+ * 如果machine_ip_1和machine_ip_2都有值但machine_ip_3为空，写入machine_ip_3
+ * 如果IP已存在于任何一个字段中，则不更新
+ * @param {string} userId - 用户ID
+ * @param {string} ip - IP地址
+ * @returns {Promise<void>}
+ */
+async function updateUserMachineIp(userId, ip) {
+  try {
+    console.log(`[updateUserMachineIp] Starting update for user ${userId} with IP ${ip}`);
+    
+    // 获取用户当前的machine_ip字段值
+    const { data: user, error: fetchError } = await supabase
+      .from('users')
+      .select('machine_ip_1, machine_ip_2, machine_ip_3')
+      .eq('id', userId)
+      .single();
+
+    if (fetchError) {
+      console.error(`[updateUserMachineIp] Error fetching user machine IPs for user ${userId}:`, fetchError);
+      return;
+    }
+
+    console.log(`[updateUserMachineIp] Current user machine IPs:`, {
+      machine_ip_1: user.machine_ip_1,
+      machine_ip_2: user.machine_ip_2,
+      machine_ip_3: user.machine_ip_3
+    });
+
+    // 检查IP是否已经存在于任何一个字段中
+    if (user.machine_ip_1 === ip || user.machine_ip_2 === ip || user.machine_ip_3 === ip) {
+      console.log(`[updateUserMachineIp] IP ${ip} already exists in user ${userId} machine IPs, skipping update`);
+      return;
+    }
+
+    // 确定要更新的字段（安全地检查null和空字符串）
+    let updateField = null;
+    if (!user.machine_ip_1 || (typeof user.machine_ip_1 === 'string' && user.machine_ip_1.trim() === '')) {
+      updateField = 'machine_ip_1';
+    } else if (!user.machine_ip_2 || (typeof user.machine_ip_2 === 'string' && user.machine_ip_2.trim() === '')) {
+      updateField = 'machine_ip_2';
+    } else if (!user.machine_ip_3 || (typeof user.machine_ip_3 === 'string' && user.machine_ip_3.trim() === '')) {
+      updateField = 'machine_ip_3';
+    }
+
+    if (updateField) {
+      console.log(`[updateUserMachineIp] Updating ${updateField} for user ${userId} with IP ${ip}`);
+      const { error: updateError } = await supabase
+        .from('users')
+        .update({ [updateField]: ip })
+        .eq('id', userId);
+
+      if (updateError) {
+        console.error(`[updateUserMachineIp] Error updating ${updateField} for user ${userId}:`, updateError);
+      } else {
+        console.log(`[updateUserMachineIp] Successfully updated ${updateField} for user ${userId} with IP ${ip}`);
+      }
+    } else {
+      console.log(`[updateUserMachineIp] All machine IP slots are full for user ${userId}, cannot add IP ${ip}`);
+    }
+  } catch (error) {
+    console.error(`[updateUserMachineIp] Error in updateUserMachineIp for user ${userId}:`, error);
+  }
+}
+
+/**
+ * 更新机器的最后心跳时间
+ * @param {string} userId - 用户ID
+ * @param {string} ip - IP地址
+ * @returns {Promise<{success: boolean, error?: string}>}
+ */
+export async function updateMachineHeartbeat(userId, ip) {
+  try {
+    if (!userId || !ip) {
+      console.error('Invalid parameters for updateMachineHeartbeat');
+      return { success: false, error: 'Invalid parameters' };
+    }
+
+    const { error } = await supabase
+      .from('machines')
+      .update({
+        last_heartbeat: new Date().toISOString(),
+        status: 'Active',
+        updated_at: new Date().toISOString()
+      })
+      .eq('user_id', userId)
+      .eq('ip', ip);
+
+    if (error) {
+      console.error('Error updating machine heartbeat:', error);
+      return { success: false, error: error.message };
+    }
+
+    return { success: true };
+  } catch (error) {
+    console.error('Error in updateMachineHeartbeat:', error);
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * 将机器状态更新为离线
+ * @param {string} userId - 用户ID
+ * @param {string} ip - IP地址
+ * @returns {Promise<{success: boolean, error?: string}>}
+ */
+export async function setMachineOffline(userId, ip) {
+  try {
+    if (!userId || !ip) {
+      console.error('Invalid parameters for setMachineOffline');
+      return { success: false, error: 'Invalid parameters' };
+    }
+
+    const { error } = await supabase
+      .from('machines')
+      .update({
+        status: 'Offline',
+        updated_at: new Date().toISOString()
+      })
+      .eq('user_id', userId)
+      .eq('ip', ip);
+
+    if (error) {
+      console.error('Error setting machine offline:', error);
+      return { success: false, error: error.message };
+    }
+
+    console.log(`Machine set to offline: user ${userId}, IP ${ip}`);
+    return { success: true };
+  } catch (error) {
+    console.error('Error in setMachineOffline:', error);
+    return { success: false, error: error.message };
+  }
+}
+
 export default supabase;
 
