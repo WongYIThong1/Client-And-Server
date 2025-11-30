@@ -1,74 +1,59 @@
 import jwt from 'jsonwebtoken';
 import { JWT_SECRET, ACCESS_TOKEN_EXPIRY, REFRESH_TOKEN_EXPIRY } from '../config.js';
-import { tokenBlacklist, cleanupTokenBlacklist } from '../stores.js';
+import { tokenBlacklist } from '../stores.js';
 
-/**
- * 生成access token（短期有效）
- * @param {string} userId - 用户ID
- * @returns {string} JWT token
- */
+// ???????,??????
+const tokenBlacklistQueue = [];
+const MAX_BLACKLIST = 10000;
+
 export function generateAccessToken(userId) {
   return jwt.sign(
-    { 
-      userId, 
+    {
+      userId,
       type: 'access',
-      timestamp: Date.now() 
+      timestamp: Date.now()
     },
     JWT_SECRET,
     { expiresIn: ACCESS_TOKEN_EXPIRY }
   );
 }
 
-/**
- * 生成refresh token（长期有效，用于刷新access token）
- * @param {string} userId - 用户ID
- * @returns {string} JWT token
- */
 export function generateRefreshToken(userId) {
   return jwt.sign(
-    { 
-      userId, 
+    {
+      userId,
       type: 'refresh',
-      timestamp: Date.now() 
+      timestamp: Date.now()
     },
     JWT_SECRET,
     { expiresIn: REFRESH_TOKEN_EXPIRY }
   );
 }
 
-/**
- * 验证token
- * @param {string} token - JWT token
- * @returns {object|null} 解码后的token payload，如果无效则返回null
- */
 export function verifyToken(token) {
+  if (!token) return null;
   try {
-    // 检查token是否在黑名单中
     if (tokenBlacklist.has(token)) {
       return null;
     }
     return jwt.verify(token, JWT_SECRET);
-  } catch (error) {
+  } catch {
     return null;
   }
 }
 
-/**
- * 撤销token（加入黑名单）
- * @param {string} token - 要撤销的token
- */
 export function revokeToken(token) {
-  tokenBlacklist.add(token);
-  // 定期清理过期的token
-  cleanupTokenBlacklist();
+  if (!token) return;
+  if (!tokenBlacklist.has(token)) {
+    tokenBlacklist.add(token);
+    tokenBlacklistQueue.push(token);
+    if (tokenBlacklistQueue.length > MAX_BLACKLIST) {
+      const oldest = tokenBlacklistQueue.shift();
+      tokenBlacklist.delete(oldest);
+    }
+  }
 }
 
-/**
- * 检查token是否即将过期
- * @param {object} decoded - 解码后的token
- * @param {number} threshold - 过期阈值（毫秒）
- * @returns {boolean} 如果剩余时间少于阈值则返回true
- */
 export function isTokenExpiringSoon(decoded, threshold) {
   if (!decoded || !decoded.exp) {
     return false;
@@ -76,4 +61,3 @@ export function isTokenExpiringSoon(decoded, threshold) {
   const remainingTime = (decoded.exp * 1000) - Date.now();
   return remainingTime < threshold && remainingTime > 0;
 }
-

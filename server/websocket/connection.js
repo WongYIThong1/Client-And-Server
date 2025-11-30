@@ -1,48 +1,7 @@
-import { HEARTBEAT_INTERVAL } from '../config.js';
-import { authenticatedConnections, cleanupConnection } from '../stores.js';
+import { authenticatedConnections, cleanupConnection, clientSystemInfo } from '../stores.js';
 import { setMachineOffline } from '../supabase.js';
 import { handleAuth, handleRefreshToken, handleTokenAuth, checkAndRefreshToken } from '../auth/handlers.js';
-import { handleSystemInfo, handleHeartbeat, handleData, handlePong, handleDisconnect } from './handlers.js';
-
-/**
- * 设置WebSocket连接的心跳机制
- * @param {WebSocket} ws - WebSocket连接
- * @returns {Function} 返回停止心跳的函数
- */
-export function setupHeartbeat(ws) {
-  let heartbeatInterval = null;
-  let pongReceived = true;
-
-  const startHeartbeat = () => {
-    heartbeatInterval = setInterval(() => {
-      if (!pongReceived) {
-        console.log('Pong timeout, closing connection');
-        ws.terminate();
-        return;
-      }
-      pongReceived = false;
-      try {
-        ws.send(JSON.stringify({ type: 'ping' }));
-      } catch (error) {
-        console.error('Error sending ping:', error);
-      }
-    }, HEARTBEAT_INTERVAL);
-  };
-
-  const stopHeartbeat = () => {
-    if (heartbeatInterval) {
-      clearInterval(heartbeatInterval);
-      heartbeatInterval = null;
-    }
-  };
-
-  // 返回停止心跳的函数和设置pong接收状态的函数
-  return {
-    start: startHeartbeat,
-    stop: stopHeartbeat,
-    setPongReceived: () => { pongReceived = true; }
-  };
-}
+import { handleSystemInfo, handleData, handleDisconnect } from './handlers.js';
 
 /**
  * 处理WebSocket消息
@@ -53,12 +12,6 @@ export function setupHeartbeat(ws) {
 export async function handleMessage(ws, connectionState, message) {
   try {
     const data = JSON.parse(message.toString());
-    
-    // 处理心跳响应
-    if (handlePong(data)) {
-      connectionState.heartbeat.setPongReceived();
-      return;
-    }
 
     // 处理认证请求
     const authResult = await handleAuth(ws, data);
@@ -67,7 +20,6 @@ export async function handleMessage(ws, connectionState, message) {
     }
     if (authResult && authResult.authenticated) {
       connectionState.isAuthenticated = true;
-      connectionState.heartbeat.start();
       return;
     }
 
@@ -83,7 +35,6 @@ export async function handleMessage(ws, connectionState, message) {
         const authenticated = await handleTokenAuth(ws, data);
         if (authenticated) {
           connectionState.isAuthenticated = true;
-          connectionState.heartbeat.start();
         } else {
           return; // 认证失败，已发送错误消息
         }
@@ -99,13 +50,8 @@ export async function handleMessage(ws, connectionState, message) {
     // 检查并自动刷新即将过期的token
     await checkAndRefreshToken(ws);
 
-    // 处理system_info消息
+    // 处理system_info消息（连接建立时自动发送）
     if (await handleSystemInfo(ws, data, connectionState.isAuthenticated)) {
-      return;
-    }
-
-    // 处理heartbeat消息
-    if (await handleHeartbeat(ws, data, connectionState.isAuthenticated)) {
       return;
     }
 
@@ -135,7 +81,6 @@ export async function handleMessage(ws, connectionState, message) {
  */
 export async function handleClose(ws, connectionState) {
   console.log('Client disconnected');
-  connectionState.heartbeat.stop();
   
   // 如果已认证，更新机器状态为离线（处理强制关闭的情况）
   const connInfo = authenticatedConnections.get(ws);
@@ -143,13 +88,17 @@ export async function handleClose(ws, connectionState) {
   
   if (connInfo && sysInfo) {
     const userId = connInfo.userId;
-    const ip = sysInfo.ip;
     
-    if (userId && ip && ip !== 'unknown') {
+    // 使用电脑名字作为机器标识（如果为空或unknown，则使用IP作为备用）
+    const machineIdentifier = (sysInfo.machineName && sysInfo.machineName !== 'unknown') 
+      ? sysInfo.machineName 
+      : (sysInfo.ip && sysInfo.ip !== 'unknown' ? sysInfo.ip : null);
+    
+    if (userId && machineIdentifier) {
       // 异步更新状态，不阻塞关闭流程
-      setMachineOffline(userId, ip).then(result => {
+      setMachineOffline(userId, machineIdentifier).then(result => {
         if (result.success) {
-          console.log(`Machine set to offline (forced disconnect): user ${userId}, IP ${ip}`);
+          console.log(`Machine set to offline (forced disconnect): user ${userId}, machineName ${machineIdentifier}`);
         } else {
           console.error(`Failed to set machine offline: ${result.error}`);
         }
@@ -171,7 +120,6 @@ export async function handleClose(ws, connectionState) {
  */
 export function handleError(ws, error, connectionState) {
   console.error('WebSocket error:', error);
-  connectionState.heartbeat.stop();
   cleanupConnection(ws);
 }
 
@@ -183,8 +131,7 @@ export function setupConnection(ws) {
   console.log('New client connected');
   
   const connectionState = {
-    isAuthenticated: false,
-    heartbeat: setupHeartbeat(ws)
+    isAuthenticated: false
   };
 
   // 处理消息

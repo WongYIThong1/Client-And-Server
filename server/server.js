@@ -3,6 +3,8 @@ import https from 'https';
 import http from 'http';
 import fs from 'fs';
 import { PORT } from './config.js';
+import { authenticatedConnections, clientSystemInfo } from './stores.js';
+import { setMachineOffline } from './supabase.js';
 
 /**
  * 创建HTTP/HTTPS服务器
@@ -74,14 +76,34 @@ export function startServer(server, useTLS) {
  */
 export function shutdownServer(wss, httpServer) {
   console.log('\nShutting down server...');
-  wss.close(() => {
-    if (httpServer && httpServer.close) {
-      httpServer.close(() => {
-        process.exit(0);
-      });
-    } else {
-      process.exit(0);
+  // 将已认证的机器标记为离线（最佳努力）
+  const offlineTasks = [];
+  for (const [ws, connInfo] of authenticatedConnections.entries()) {
+    const sysInfo = clientSystemInfo.get(ws);
+    const machineIdentifier = sysInfo
+      ? (sysInfo.machineName && sysInfo.machineName !== 'unknown'
+          ? sysInfo.machineName
+          : (sysInfo.ip && sysInfo.ip !== 'unknown' ? sysInfo.ip : null))
+      : null;
+    if (connInfo?.userId && machineIdentifier) {
+      offlineTasks.push(
+        setMachineOffline(connInfo.userId, machineIdentifier).catch((err) => {
+          console.error(`Failed to set machine offline for user ${connInfo.userId}:`, err);
+        })
+      );
     }
+  }
+
+  Promise.all(offlineTasks).finally(() => {
+    wss.close(() => {
+      if (httpServer && httpServer.close && httpServer.listening) {
+        httpServer.close(() => {
+          process.exit(0);
+        });
+      } else {
+        process.exit(0);
+      }
+    });
   });
 }
 

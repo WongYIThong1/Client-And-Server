@@ -1,8 +1,8 @@
-import { saveOrUpdateMachine, updateMachineHeartbeat, setMachineOffline } from '../supabase.js';
+import { saveOrUpdateMachine, setMachineOffline } from '../supabase.js';
 import { authenticatedConnections, clientSystemInfo } from '../stores.js';
 
 /**
- * 处理system_info消息（客户端首次心跳包）
+ * 处理system_info消息（连接建立时自动发送）
  * @param {WebSocket} ws - WebSocket连接
  * @param {object} data - 消息数据
  * @param {boolean} isAuthenticated - 是否已认证
@@ -68,71 +68,6 @@ export async function handleSystemInfo(ws, data, isAuthenticated) {
 }
 
 /**
- * 处理heartbeat消息（客户端定期心跳包）
- * @param {WebSocket} ws - WebSocket连接
- * @param {object} data - 消息数据
- * @param {boolean} isAuthenticated - 是否已认证
- * @returns {Promise<boolean>} 返回true表示已处理
- */
-export async function handleHeartbeat(ws, data, isAuthenticated) {
-  if (data.type !== 'heartbeat') {
-    return false;
-  }
-
-  // 检查是否已认证
-  if (!isAuthenticated) {
-    ws.send(JSON.stringify({
-      type: 'error',
-      message: 'Authentication required before sending heartbeat'
-    }));
-    return true;
-  }
-
-  const sysInfo = clientSystemInfo.get(ws);
-  const connInfo = authenticatedConnections.get(ws);
-  const userId = connInfo ? connInfo.userId : 'unknown';
-  const apiKey = connInfo ? connInfo.apiKey : null;
-  
-  if (sysInfo) {
-    console.log(`Received heartbeat from user ${userId} (IP: ${sysInfo.ip})`);
-    
-    // 更新机器的最后心跳时间
-    if (userId !== 'unknown' && sysInfo.ip && sysInfo.ip !== 'unknown') {
-      const result = await updateMachineHeartbeat(userId, sysInfo.ip);
-      
-      if (!result.success) {
-        // 如果更新失败，可能是机器记录不存在，尝试创建
-        if (apiKey) {
-          const createResult = await saveOrUpdateMachine(userId, apiKey, {
-            ip: sysInfo.ip,
-            ram: sysInfo.ram || 'unknown',
-            cpuCores: sysInfo.cpuCores || 0,
-            machineName: sysInfo.machineName || 'unknown'
-          });
-          
-          if (!createResult.success) {
-            console.error(`Failed to update/create machine heartbeat: ${result.error || createResult.error}`);
-          }
-        } else {
-          console.warn(`Cannot update machine heartbeat: missing apiKey for user ${userId}`);
-        }
-      }
-    }
-  } else {
-    console.log(`Received heartbeat from user ${userId} (no system info)`);
-  }
-  
-  // 发送确认消息
-  ws.send(JSON.stringify({
-    type: 'heartbeat_received',
-    message: 'Heartbeat received',
-    timestamp: Date.now()
-  }));
-  
-  return true;
-}
-
-/**
  * 处理data消息
  * @param {WebSocket} ws - WebSocket连接
  * @param {object} data - 消息数据
@@ -155,15 +90,6 @@ export function handleData(ws, data) {
 }
 
 /**
- * 处理pong消息（心跳响应）
- * @param {object} data - 消息数据
- * @returns {boolean} 返回true表示已处理
- */
-export function handlePong(data) {
-  return data.type === 'pong';
-}
-
-/**
  * 处理disconnect消息（客户端主动断开）
  * @param {WebSocket} ws - WebSocket连接
  * @param {object} data - 消息数据
@@ -183,15 +109,21 @@ export async function handleDisconnect(ws, data, isAuthenticated) {
   const connInfo = authenticatedConnections.get(ws);
   const sysInfo = clientSystemInfo.get(ws);
   const userId = connInfo ? connInfo.userId : 'unknown';
-  const ip = sysInfo ? sysInfo.ip : null;
+  
+  // 使用电脑名字作为机器标识（如果为空或unknown，则使用IP作为备用）
+  const machineIdentifier = sysInfo 
+    ? ((sysInfo.machineName && sysInfo.machineName !== 'unknown') 
+        ? sysInfo.machineName 
+        : (sysInfo.ip && sysInfo.ip !== 'unknown' ? sysInfo.ip : null))
+    : null;
 
-  if (userId !== 'unknown' && ip && ip !== 'unknown') {
+  if (userId !== 'unknown' && machineIdentifier) {
     // 更新机器状态为离线
-    const result = await setMachineOffline(userId, ip);
+    const result = await setMachineOffline(userId, machineIdentifier);
     if (!result.success) {
       console.error(`Failed to set machine offline: ${result.error}`);
     } else {
-      console.log(`Machine disconnected gracefully: user ${userId}, IP ${ip}`);
+      console.log(`Machine disconnected gracefully: user ${userId}, machineName ${machineIdentifier}`);
     }
   }
 

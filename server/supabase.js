@@ -28,51 +28,38 @@ const supabase = createClient(supabaseUrl, supabaseKey, {
  */
 export async function verifyApiKey(apiKey) {
   try {
-    // 清理API Key（去除首尾空格）
-    const cleanApiKey = apiKey ? apiKey.trim() : '';
-    
+    const cleanApiKey = apiKey ? apiKey.trim() : "";
     if (!cleanApiKey) {
-      console.log('API Key is empty');
+      console.log("API Key is empty");
       return { valid: false };
     }
 
     console.log(`Verifying API Key (length: ${cleanApiKey.length})`);
 
-    // 问题：.eq() 查询返回了错误的行，所以获取所有用户然后在代码中精确匹配
     const { data, error } = await supabase
-      .from('users')
-      .select('id, apikey');
+      .from("users")
+      .select("id")
+      .eq("apikey", cleanApiKey)
+      .maybeSingle();
 
-    if (error) {
-      console.error('Supabase query error:', JSON.stringify(error, null, 2));
+    if (error && error.code !== "PGRST116") {
+      console.error("Supabase query error:", JSON.stringify(error, null, 2));
       return { valid: false };
     }
 
-    console.log(`Query result: Found ${data ? data.length : 0} total user(s)`);
-
-    // 在代码中进行精确匹配（因为Supabase的.eq()可能有问题）
-    if (data && data.length > 0) {
-      for (const row of data) {
-        const dbApiKey = row.apikey ? row.apikey.trim() : '';
-        
-        // 精确匹配
-        if (dbApiKey === cleanApiKey) {
-          console.log(`API Key verified successfully for user: ${row.id}`);
-          return { valid: true, userId: row.id };
-        }
-      }
-      
-      console.log('API Key mismatch - no matching key found after checking all users');
-    } else {
-      console.log('No users found in database');
+    if (data && data.id) {
+      console.log(`API Key verified successfully for user: ${data.id}`);
+      return { valid: true, userId: data.id };
     }
 
+    console.log("API Key mismatch - no matching key found");
     return { valid: false };
   } catch (error) {
-    console.error('Error verifying API key:', error);
+    console.error("Error verifying API key:", error);
     return { valid: false };
   }
 }
+
 
 /**
  * 保存或更新机器信息到machines表
@@ -86,21 +73,29 @@ export async function verifyApiKey(apiKey) {
  */
 export async function saveOrUpdateMachine(userId, apiKey, machineInfo) {
   try {
-    console.log(`[saveOrUpdateMachine] Called with userId=${userId}, apiKey=${apiKey ? 'present' : 'missing'}, ip=${machineInfo?.ip}`);
+    console.log(`[saveOrUpdateMachine] Called with userId=${userId}, apiKey=${apiKey ? 'present' : 'missing'}, machineName=${machineInfo?.machineName}`);
     
-    if (!userId || !apiKey || !machineInfo || !machineInfo.ip) {
-      console.error('[saveOrUpdateMachine] Invalid parameters:', { userId, hasApiKey: !!apiKey, hasMachineInfo: !!machineInfo, ip: machineInfo?.ip });
+    if (!userId || !apiKey || !machineInfo) {
+      console.error('[saveOrUpdateMachine] Invalid parameters:', { userId, hasApiKey: !!apiKey, hasMachineInfo: !!machineInfo });
       return { success: false, error: 'Invalid parameters' };
     }
 
     const { ip, ram, cpuCores, machineName } = machineInfo;
 
-    // 首先尝试查找现有记录（根据user_id和ip）
+    // 使用电脑名字作为机器标识（如果为空或unknown，则使用IP作为备用）
+    const machineIdentifier = (machineName && machineName !== 'unknown') ? machineName : (ip || 'unknown');
+    
+    if (machineIdentifier === 'unknown') {
+      console.error('[saveOrUpdateMachine] Cannot identify machine: both machineName and ip are unknown');
+      return { success: false, error: 'Cannot identify machine: missing machineName and ip' };
+    }
+
+    // 首先尝试查找现有记录（根据user_id和name，如果name为空则使用ip）
     const { data: existingMachine, error: findError } = await supabase
       .from('machines')
       .select('id')
       .eq('user_id', userId)
-      .eq('ip', ip)
+      .eq('name', machineIdentifier)
       .maybeSingle();
 
     if (findError && findError.code !== 'PGRST116') {
@@ -110,11 +105,11 @@ export async function saveOrUpdateMachine(userId, apiKey, machineInfo) {
     }
 
     if (existingMachine) {
-      // 更新现有记录（不更新name字段，保留原有的电脑名字）
+      // 更新现有记录（更新IP、RAM、Core等信息，但保留name字段）
       const machineData = {
         user_id: userId,
         apikey: apiKey,
-        ip: ip,
+        ip: ip || null, // IP可能会变化，所以更新它
         ram: ram || null,
         core: cpuCores || null,
         // 不更新name字段，保留数据库中的原有值
@@ -134,20 +129,22 @@ export async function saveOrUpdateMachine(userId, apiKey, machineInfo) {
       }
 
       // 即使更新现有机器，也检查并更新users表中的machine_ip字段（如果IP不在其中）
-      console.log(`[saveOrUpdateMachine] Machine exists, calling updateUserMachineIp for user ${userId}, IP ${ip}`);
-      await updateUserMachineIp(userId, ip);
+      if (ip && ip !== 'unknown') {
+        console.log(`[saveOrUpdateMachine] Machine exists, calling updateUserMachineIp for user ${userId}, IP ${ip}`);
+        await updateUserMachineIp(userId, ip);
+      }
 
-      console.log(`Machine updated: user ${userId}, IP ${ip}`);
+      console.log(`Machine updated: user ${userId}, machineName ${machineIdentifier}`);
       return { success: true };
     } else {
       // 创建新记录（包含电脑名字）
       const machineData = {
         user_id: userId,
         apikey: apiKey,
-        ip: ip,
+        ip: ip || null,
         ram: ram || null,
         core: cpuCores || null,
-        name: machineName || null, // 只在创建新记录时保存电脑名字
+        name: machineIdentifier, // 使用电脑名字或IP作为标识
         status: 'Active',
         last_heartbeat: new Date().toISOString(),
         updated_at: new Date().toISOString()
@@ -163,10 +160,12 @@ export async function saveOrUpdateMachine(userId, apiKey, machineInfo) {
       }
 
       // 更新users表中的machine_ip字段
-      console.log(`[saveOrUpdateMachine] Machine created, calling updateUserMachineIp for user ${userId}, IP ${ip}`);
-      await updateUserMachineIp(userId, ip);
+      if (ip && ip !== 'unknown') {
+        console.log(`[saveOrUpdateMachine] Machine created, calling updateUserMachineIp for user ${userId}, IP ${ip}`);
+        await updateUserMachineIp(userId, ip);
+      }
 
-      console.log(`Machine created: user ${userId}, IP ${ip}`);
+      console.log(`Machine created: user ${userId}, machineName ${machineIdentifier}`);
       return { success: true };
     }
   } catch (error) {
@@ -246,12 +245,12 @@ async function updateUserMachineIp(userId, ip) {
 /**
  * 更新机器的最后心跳时间
  * @param {string} userId - 用户ID
- * @param {string} ip - IP地址
+ * @param {string} machineName - 电脑名字（机器标识）
  * @returns {Promise<{success: boolean, error?: string}>}
  */
-export async function updateMachineHeartbeat(userId, ip) {
+export async function updateMachineHeartbeat(userId, machineName) {
   try {
-    if (!userId || !ip) {
+    if (!userId || !machineName) {
       console.error('Invalid parameters for updateMachineHeartbeat');
       return { success: false, error: 'Invalid parameters' };
     }
@@ -264,7 +263,7 @@ export async function updateMachineHeartbeat(userId, ip) {
         updated_at: new Date().toISOString()
       })
       .eq('user_id', userId)
-      .eq('ip', ip);
+      .eq('name', machineName);
 
     if (error) {
       console.error('Error updating machine heartbeat:', error);
@@ -281,12 +280,12 @@ export async function updateMachineHeartbeat(userId, ip) {
 /**
  * 将机器状态更新为离线
  * @param {string} userId - 用户ID
- * @param {string} ip - IP地址
+ * @param {string} machineName - 电脑名字（机器标识）
  * @returns {Promise<{success: boolean, error?: string}>}
  */
-export async function setMachineOffline(userId, ip) {
+export async function setMachineOffline(userId, machineName) {
   try {
-    if (!userId || !ip) {
+    if (!userId || !machineName) {
       console.error('Invalid parameters for setMachineOffline');
       return { success: false, error: 'Invalid parameters' };
     }
@@ -298,14 +297,14 @@ export async function setMachineOffline(userId, ip) {
         updated_at: new Date().toISOString()
       })
       .eq('user_id', userId)
-      .eq('ip', ip);
+      .eq('name', machineName);
 
     if (error) {
       console.error('Error setting machine offline:', error);
       return { success: false, error: error.message };
     }
 
-    console.log(`Machine set to offline: user ${userId}, IP ${ip}`);
+    console.log(`Machine set to offline: user ${userId}, machineName ${machineName}`);
     return { success: true };
   } catch (error) {
     console.error('Error in setMachineOffline:', error);
