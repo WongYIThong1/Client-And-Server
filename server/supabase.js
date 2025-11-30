@@ -38,7 +38,7 @@ export async function verifyApiKey(apiKey) {
 
     const { data, error } = await supabase
       .from("users")
-      .select("id")
+      .select("id, status")
       .eq("apikey", cleanApiKey)
       .maybeSingle();
 
@@ -48,6 +48,11 @@ export async function verifyApiKey(apiKey) {
     }
 
     if (data && data.id) {
+      // 检查用户状态
+      if (data.status !== "Active") {
+        console.log(`API Key found but user status is: ${data.status}`);
+        return { valid: false };
+      }
       console.log(`API Key verified successfully for user: ${data.id}`);
       return { valid: true, userId: data.id };
     }
