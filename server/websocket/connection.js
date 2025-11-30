@@ -1,5 +1,5 @@
 import { authenticatedConnections, cleanupConnection, clientSystemInfo } from '../stores.js';
-import { setMachineOffline } from '../supabase.js';
+import { setMachineOffline, checkPlanExpired } from '../supabase.js';
 import { handleAuth, handleRefreshToken, handleTokenAuth, checkAndRefreshToken } from '../auth/handlers.js';
 import { handleSystemInfo, handleData, handleDisconnect } from './handlers.js';
 
@@ -50,6 +50,23 @@ export async function handleMessage(ws, connectionState, message) {
     // 检查并自动刷新即将过期的token
     await checkAndRefreshToken(ws);
 
+    // 检查 plan 是否过期
+    const connInfo = authenticatedConnections.get(ws);
+    if (connInfo && connInfo.userId) {
+      const planCheck = await checkPlanExpired(connInfo.userId);
+      if (planCheck.expired) {
+        ws.send(JSON.stringify({
+          type: 'plan_expired',
+          message: 'Your plan has expired. Please renew your subscription.'
+        }));
+        // 关闭连接
+        setTimeout(() => {
+          ws.close();
+        }, 100);
+        return;
+      }
+    }
+
     // 处理system_info消息（连接建立时自动发送）
     if (await handleSystemInfo(ws, data, connectionState.isAuthenticated)) {
       return;
@@ -80,7 +97,6 @@ export async function handleMessage(ws, connectionState, message) {
  * @param {object} connectionState - 连接状态对象
  */
 export async function handleClose(ws, connectionState) {
-  console.log('Client disconnected');
   
   // 如果已认证，更新机器状态为离线（处理强制关闭的情况）
   const connInfo = authenticatedConnections.get(ws);
@@ -96,13 +112,7 @@ export async function handleClose(ws, connectionState) {
     
     if (userId && machineIdentifier) {
       // 异步更新状态，不阻塞关闭流程
-      setMachineOffline(userId, machineIdentifier).then(result => {
-        if (result.success) {
-          console.log(`Machine set to offline (forced disconnect): user ${userId}, machineName ${machineIdentifier}`);
-        } else {
-          console.error(`Failed to set machine offline: ${result.error}`);
-        }
-      }).catch(error => {
+      setMachineOffline(userId, machineIdentifier).catch(error => {
         console.error('Error setting machine offline:', error);
       });
     }
@@ -128,7 +138,6 @@ export function handleError(ws, error, connectionState) {
  * @param {WebSocket} ws - WebSocket连接
  */
 export function setupConnection(ws) {
-  console.log('New client connected');
   
   const connectionState = {
     isAuthenticated: false

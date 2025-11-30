@@ -37,8 +37,6 @@ export async function handleSystemInfo(ws, data, isAuthenticated) {
   const userId = connInfo ? connInfo.userId : 'unknown';
   const apiKey = connInfo ? connInfo.apiKey : null;
   
-  console.log(`Received system_info from user ${userId}:`, systemInfo);
-  
   // 保存机器信息到Supabase
   if (userId !== 'unknown' && apiKey && systemInfo.ip !== 'unknown') {
     const result = await saveOrUpdateMachine(userId, apiKey, {
@@ -49,13 +47,8 @@ export async function handleSystemInfo(ws, data, isAuthenticated) {
     });
     
     if (!result.success) {
-      console.error(`Failed to save machine info to Supabase: ${result.error}`);
-      // 不阻止客户端响应，仅记录错误
-    } else {
-      console.log(`Machine info saved to Supabase: user ${userId}, IP ${systemInfo.ip}`);
+      console.error(`Failed to save machine info: ${result.error}`);
     }
-  } else {
-    console.warn(`Cannot save machine info: userId=${userId}, apiKey=${apiKey ? 'present' : 'missing'}, ip=${systemInfo.ip}`);
   }
   
   // 发送确认消息
@@ -122,8 +115,6 @@ export async function handleDisconnect(ws, data, isAuthenticated) {
     const result = await setMachineOffline(userId, machineIdentifier);
     if (!result.success) {
       console.error(`Failed to set machine offline: ${result.error}`);
-    } else {
-      console.log(`Machine disconnected gracefully: user ${userId}, machineName ${machineIdentifier}`);
     }
   }
 

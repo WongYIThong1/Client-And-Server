@@ -18,8 +18,6 @@ export async function handleAuth(ws, data) {
   }
 
   const cleanApiKey = apiKey.trim();
-  console.log(`Received API Key for verification (length: ${cleanApiKey.length})`);
-
   const verification = await verifyApiKey(cleanApiKey);
   
   if (verification.valid) {
@@ -41,14 +39,24 @@ export async function handleAuth(ws, data) {
       message: 'Authentication successful'
     }));
 
-    console.log(`Client authenticated: User ID ${verification.userId}`);
+    console.log(`Client authenticated: User ${verification.userId}`);
     return { authenticated: true, userId: verification.userId };
   } else {
-    ws.send(JSON.stringify({
-      type: 'auth_failed',
-      message: 'Invalid API Key'
-    }));
-    console.log('Authentication failed: Invalid API Key');
+    if (verification.planExpired) {
+      ws.send(JSON.stringify({
+        type: 'plan_expired',
+        message: 'Your plan has expired. Please renew your subscription.'
+      }));
+      // 关闭连接
+      setTimeout(() => {
+        ws.close();
+      }, 100);
+    } else {
+      ws.send(JSON.stringify({
+        type: 'auth_failed',
+        message: 'Invalid API Key'
+      }));
+    }
     return true;
   }
 }
@@ -175,7 +183,6 @@ export async function checkAndRefreshToken(ws) {
             refreshToken: newRefreshToken,
             message: 'Token automatically refreshed'
           }));
-          console.log(`Token auto-refreshed for user ${refreshDecoded.userId}`);
         }
       }
     } else {
@@ -192,7 +199,6 @@ export async function checkAndRefreshToken(ws) {
           refreshToken: newRefreshToken,
           message: 'Token automatically refreshed (expired)'
         }));
-        console.log(`Token auto-refreshed (expired) for user ${refreshDecoded.userId}`);
       }
     }
   } catch {

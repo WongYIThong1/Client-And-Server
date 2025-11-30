@@ -3,6 +3,7 @@ package connection
 import (
 	"fmt"
 	"log"
+	"os"
 
 	"websocket-client/auth"
 	"websocket-client/utils"
@@ -78,6 +79,13 @@ func SetupMessageHandler() MessageHandler {
 			if msg.Data != nil {
 				fmt.Printf("Payload: %v\n", msg.Data)
 			}
+
+		case "plan_expired":
+			fmt.Printf("\n%s%sPlan Expired%s\n", utils.ColorRed, utils.ColorBold, utils.ColorReset)
+			fmt.Printf("%s\n", msg.Message)
+			fmt.Println("Exiting...")
+			conn.Close()
+			os.Exit(1)
 
 		case "error":
 			fmt.Printf("\n[Error] %s\n", msg.Message)

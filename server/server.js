@@ -23,13 +23,9 @@ export function createServer() {
       };
       server = https.createServer(options);
       useTLS = true;
-      console.log('TLS enabled - using WSS');
-    } else {
-      console.log('TLS certificates not found - using WS (not recommended for production)');
-      console.log('To enable WSS, create cert.pem and key.pem files');
     }
   } catch (error) {
-    console.log('TLS setup failed, using WS:', error.message);
+    // TLS setup failed, fallback to WS
   }
 
   // 如果没有HTTPS服务器，创建一个简单的HTTP服务器（仅用于开发）
@@ -62,10 +58,10 @@ export function createWebSocketServer(httpServer, useTLS) {
 export function startServer(server, useTLS) {
   if (useTLS) {
     server.listen(PORT, () => {
-      console.log(`WebSocket server listening on ${useTLS ? 'wss' : 'ws'}://localhost:${PORT}`);
+      console.log(`Server listening on wss://localhost:${PORT}`);
     });
   } else {
-    console.log(`WebSocket server listening on ws://localhost:${PORT}`);
+    console.log(`Server listening on ws://localhost:${PORT}`);
   }
 }
 
@@ -75,7 +71,6 @@ export function startServer(server, useTLS) {
  * @param {object} httpServer - HTTP/HTTPS服务器
  */
 export function shutdownServer(wss, httpServer) {
-  console.log('\nShutting down server...');
   // 将已认证的机器标记为离线（最佳努力）
   const offlineTasks = [];
   for (const [ws, connInfo] of authenticatedConnections.entries()) {
