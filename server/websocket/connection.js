@@ -188,6 +188,8 @@ export function setupConnection(ws) {
   });
 
   const HEARTBEAT_INTERVAL_MS = 30000;
+  let heartbeatCount = 0; // 心跳计数器，用于控制machine检查频率
+  const MACHINE_CHECK_INTERVAL = 2; // 每2次心跳（60秒）检查一次machine
   const heartbeatInterval = setInterval(async () => {
     if (ws.readyState === ws.CLOSED || ws.readyState === ws.CLOSING) {
       return;
@@ -200,26 +202,29 @@ export function setupConnection(ws) {
     ws.isAlive = false;
     await checkAndRefreshToken(ws).catch(() => {});
     
-    // 检查machine是否被删除
-    const connInfo = authenticatedConnections.get(ws);
-    const sysInfo = clientSystemInfo.get(ws);
-    if (connInfo && sysInfo && connInfo.userId) {
-      const machineIdentifier = (sysInfo.machineName && sysInfo.machineName !== 'unknown') 
-        ? sysInfo.machineName 
-        : (sysInfo.ip && sysInfo.ip !== 'unknown' ? sysInfo.ip : null);
-      
-      if (machineIdentifier) {
-        const machineCheck = await checkMachineExists(connInfo.userId, machineIdentifier);
-        if (!machineCheck.exists) {
-          console.log(`Machine ${machineIdentifier} deleted for user ${connInfo.userId}, closing connection`);
-          ws.send(JSON.stringify({
-            type: 'machine_deleted',
-            message: 'Your machine has been deleted. Please re-authenticate.'
-          }));
-          setTimeout(() => {
-            ws.close();
-          }, 100);
-          return;
+    // 每2次心跳（60秒）检查一次machine是否被删除
+    heartbeatCount++;
+    if (heartbeatCount % MACHINE_CHECK_INTERVAL === 0) {
+      const connInfo = authenticatedConnections.get(ws);
+      const sysInfo = clientSystemInfo.get(ws);
+      if (connInfo && sysInfo && connInfo.userId) {
+        const machineIdentifier = (sysInfo.machineName && sysInfo.machineName !== 'unknown') 
+          ? sysInfo.machineName 
+          : (sysInfo.ip && sysInfo.ip !== 'unknown' ? sysInfo.ip : null);
+        
+        if (machineIdentifier) {
+          const machineCheck = await checkMachineExists(connInfo.userId, machineIdentifier);
+          if (!machineCheck.exists) {
+            console.log(`Machine ${machineIdentifier} deleted for user ${connInfo.userId}, closing connection`);
+            ws.send(JSON.stringify({
+              type: 'machine_deleted',
+              message: 'Your machine has been deleted. Please re-authenticate.'
+            }));
+            setTimeout(() => {
+              ws.close();
+            }, 100);
+            return;
+          }
         }
       }
     }
