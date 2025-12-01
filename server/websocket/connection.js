@@ -216,13 +216,33 @@ export function setupConnection(ws) {
           const machineCheck = await checkMachineExists(connInfo.userId, machineIdentifier);
           if (!machineCheck.exists) {
             console.log(`Machine ${machineIdentifier} deleted for user ${connInfo.userId}, closing connection`);
-            ws.send(JSON.stringify({
-              type: 'machine_deleted',
-              message: 'Your machine has been deleted. Please re-authenticate.'
-            }));
-            setTimeout(() => {
-              ws.close();
-            }, 100);
+            try {
+              // 发送machine_deleted消息
+              const message = JSON.stringify({
+                type: 'machine_deleted',
+                message: 'Your machine has been deleted. Please re-authenticate.'
+              });
+              
+              // 检查连接状态
+              if (ws.readyState === ws.OPEN) {
+                ws.send(message);
+                // 给足够时间让消息发送出去，然后关闭连接
+                setTimeout(() => {
+                  if (ws.readyState === ws.OPEN || ws.readyState === ws.CONNECTING) {
+                    ws.close(1000, 'Machine deleted');
+                  }
+                }, 500);
+              } else {
+                // 连接已关闭，直接清理
+                cleanupConnection(ws);
+              }
+            } catch (error) {
+              console.error('Error sending machine_deleted message:', error);
+              // 即使发送失败也关闭连接
+              if (ws.readyState === ws.OPEN || ws.readyState === ws.CONNECTING) {
+                ws.close(1000, 'Machine deleted');
+              }
+            }
             return;
           }
         }

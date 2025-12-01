@@ -53,8 +53,15 @@ type MessageHandler func(conn *websocket.Conn, msg Message)
 func HandleMessage(conn *websocket.Conn, message []byte, handler MessageHandler) {
 	var msg Message
 	if err := json.Unmarshal(message, &msg); err != nil {
-		log.Printf("failed to parse message: %v", err)
+		log.Printf("failed to parse message: %v, raw: %s", err, string(message))
 		return
 	}
+
+	// 如果消息类型为空，可能是解析失败
+	if msg.Type == "" {
+		log.Printf("warning: message type is empty, raw: %s", string(message))
+		return
+	}
+
 	handler(conn, msg)
 }

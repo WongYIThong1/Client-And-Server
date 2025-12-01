@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"time"
 
 	"websocket-client/auth"
 	"websocket-client/utils"
@@ -15,6 +16,7 @@ var (
 	accessToken     string
 	refreshToken    string
 	isAuthenticated bool
+	shouldExit      bool // 标记是否应该退出（不重连）
 )
 
 // SetupMessageHandler 设置消息处理函数
@@ -97,7 +99,10 @@ func SetupMessageHandler() MessageHandler {
 				fmt.Println("[Local API Key removed]")
 			}
 			fmt.Println("Please restart the client and re-enter your API Key.")
+			shouldExit = true // 设置退出标志
 			conn.Close()
+			// 给一点时间让消息发送出去
+			time.Sleep(100 * time.Millisecond)
 			os.Exit(1)
 
 		case "error":
@@ -117,4 +122,9 @@ func IsAuthenticated() bool {
 // GetTokens 获取当前 token
 func GetTokens() (string, string) {
 	return accessToken, refreshToken
+}
+
+// ShouldExit 返回是否应该退出（不重连）
+func ShouldExit() bool {
+	return shouldExit
 }

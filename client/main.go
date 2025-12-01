@@ -143,7 +143,20 @@ func main() {
 	for {
 		select {
 		case message := <-messageChan:
+			// 检查是否应该退出（在处理消息前检查，避免处理新消息）
+			if connection.ShouldExit() {
+				fmt.Println("Exiting due to machine deletion...")
+				os.Exit(1)
+			}
+
 			connection.HandleMessage(conn, message, messageHandler)
+
+			// 处理消息后再次检查（machine_deleted消息会设置shouldExit）
+			if connection.ShouldExit() {
+				fmt.Println("Exiting due to machine deletion...")
+				os.Exit(1)
+			}
+
 			if connection.IsAuthenticated() && savedKey == "" {
 				if err := auth.SaveAPIKey(apiKey); err != nil {
 					log.Printf("Failed to save API Key: %v", err)
@@ -154,6 +167,12 @@ func main() {
 			}
 
 		case err := <-errorChan:
+			// 检查是否应该退出（例如收到machine_deleted消息）
+			if connection.ShouldExit() {
+				fmt.Println("Exiting due to machine deletion...")
+				os.Exit(1)
+			}
+
 			fmt.Printf("%s[Connection issue]%s %v%s\n", utils.ColorYellow, utils.ColorBold, err, utils.ColorReset)
 
 			select {
