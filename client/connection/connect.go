@@ -12,7 +12,7 @@ import (
 )
 
 // ServerURL 服务器地址
-var ServerURL = "wss://api.sqlbots.online"
+var ServerURL = "ws://localhost:5000"
 
 // ConnectToServerOnce 尝试连接服务器一次
 func ConnectToServerOnce() (*websocket.Conn, error) {

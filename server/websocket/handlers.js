@@ -1,4 +1,5 @@
-import { saveOrUpdateMachine, setMachineOffline } from '../supabase.js';
+import { saveOrUpdateMachine, setMachineOffline, checkMachineExists } from '../supabase.js';
+import supabase from '../supabase.js';
 import { authenticatedConnections, clientSystemInfo } from '../stores.js';
 
 /**
@@ -39,6 +40,40 @@ export async function handleSystemInfo(ws, data, isAuthenticated) {
   
   // 保存机器信息到Supabase
   if (userId !== 'unknown' && apiKey && systemInfo.ip !== 'unknown') {
+    // 先检查machine是否存在（防止删除后重新创建）
+    const machineIdentifier = (systemInfo.machineName && systemInfo.machineName !== 'unknown') 
+      ? systemInfo.machineName 
+      : (systemInfo.ip && systemInfo.ip !== 'unknown' ? systemInfo.ip : null);
+    
+    if (machineIdentifier) {
+      const machineCheck = await checkMachineExists(userId, machineIdentifier);
+      
+      // 如果machine不存在，说明被删除了，不应该创建新记录
+      if (!machineCheck.exists) {
+        // 尝试根据IP查找（因为name可能被重命名了）
+        const { data: machineByIp } = await supabase
+          .from('machines')
+          .select('id, name')
+          .eq('user_id', userId)
+          .eq('ip', systemInfo.ip)
+          .maybeSingle();
+        
+        if (!machineByIp) {
+          // 确实没有machine，发送删除通知
+          console.log(`Machine ${machineIdentifier} not found for user ${userId}, machine was deleted`);
+          ws.send(JSON.stringify({
+            type: 'machine_deleted',
+            message: 'Your machine has been deleted. Please re-authenticate.'
+          }));
+          setTimeout(() => {
+            ws.close(1000, 'Machine deleted');
+          }, 500);
+          return true;
+        }
+      }
+    }
+    
+    // 如果machine存在或找到了，继续保存/更新
     const result = await saveOrUpdateMachine(userId, apiKey, {
       ip: systemInfo.ip,
       ram: systemInfo.ram,
