@@ -73,7 +73,7 @@ export async function verifyApiKey(apiKey) {
     const { data: allUsers, error: fetchError } = await supabase
       .from("users")
       .select("id, status, apikey, expires_at");
-    
+
     if (fetchError) {
       console.error("Error fetching users:", fetchError.message);
       return { valid: false };
@@ -82,7 +82,7 @@ export async function verifyApiKey(apiKey) {
     if (!allUsers || allUsers.length === 0) {
       return { valid: false };
     }
-    
+
     // 在代码中查找匹配的 API Key（使用 trim 确保没有空格问题）
     const matchedUser = allUsers.find(user => {
       if (!user.apikey) return false;
@@ -102,8 +102,8 @@ export async function verifyApiKey(apiKey) {
         if (expiresAt < now) {
           return { valid: false, planExpired: true };
         }
-      }
-      
+    }
+
       console.log(`API Key verified: user ${matchedUser.id}`);
       return { valid: true, userId: matchedUser.id };
     }
@@ -163,11 +163,11 @@ export async function saveOrUpdateMachine(userId, apiKey, machineInfo) {
     // 如果没找到，再尝试根据 user_id + name 查找
     if (!existingMachine) {
       const { data: machineByName, error: findErrorByName } = await supabase
-        .from('machines')
+      .from('machines')
         .select('id, name')
-        .eq('user_id', userId)
-        .eq('name', machineIdentifier)
-        .maybeSingle();
+      .eq('user_id', userId)
+      .eq('name', machineIdentifier)
+      .maybeSingle();
 
       if (findErrorByName && findErrorByName.code !== 'PGRST116') {
         return { success: false, error: findErrorByName.message };

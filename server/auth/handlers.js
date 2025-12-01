@@ -51,11 +51,11 @@ export async function handleAuth(ws, data) {
       setTimeout(() => {
         ws.close();
       }, 100);
-    } else {
-      ws.send(JSON.stringify({
-        type: 'auth_failed',
-        message: 'Invalid API Key'
-      }));
+  } else {
+    ws.send(JSON.stringify({
+      type: 'auth_failed',
+      message: 'Invalid API Key'
+    }));
     }
     return true;
   }

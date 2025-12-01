@@ -143,6 +143,27 @@ export function setupConnection(ws) {
     isAuthenticated: false
   };
 
+  // heartbeat & token refresh
+  ws.isAlive = true;
+  ws.on('pong', () => {
+    ws.isAlive = true;
+  });
+
+  const HEARTBEAT_INTERVAL_MS = 30000;
+  const heartbeatInterval = setInterval(async () => {
+    if (ws.readyState === ws.CLOSED || ws.readyState === ws.CLOSING) {
+      return;
+    }
+    if (ws.isAlive === false) {
+      console.log('Terminating stale connection (no pong received)');
+      ws.terminate();
+      return;
+    }
+    ws.isAlive = false;
+    await checkAndRefreshToken(ws).catch(() => {});
+    ws.ping();
+  }, HEARTBEAT_INTERVAL_MS);
+
   // 处理消息
   ws.on('message', async (message) => {
     await handleMessage(ws, connectionState, message);
@@ -150,14 +171,15 @@ export function setupConnection(ws) {
 
   // 处理连接关闭
   ws.on('close', async () => {
+    clearInterval(heartbeatInterval);
     await handleClose(ws, connectionState);
   });
 
   // 处理错误
   ws.on('error', (error) => {
+    clearInterval(heartbeatInterval);
     handleError(ws, error, connectionState);
   });
 
   return connectionState;
 }
-
