@@ -141,12 +141,17 @@ export async function saveOrUpdateMachine(userId, apiKey, machineInfo) {
       return { success: false, error: 'Cannot identify machine: missing machineName and ip' };
     }
 
-    // 首先尝试根据 user_id + ip 查找（因为数据库有唯一约束）
+    // 查找策略：
+    // 1. 优先根据 user_id + ip 查找（IP是最稳定的标识）
+    // 2. 如果IP没找到，尝试根据 user_id + name 查找（使用客户端发送的name）
+    // 3. 如果还是没找到，查询该用户的所有机器，尝试根据系统特征匹配（CPU核心数）
     let existingMachine = null;
+    
+    // 策略1: 根据IP查找
     if (ip && ip !== 'unknown') {
       const { data: machineByIp, error: findErrorByIp } = await supabase
         .from('machines')
-        .select('id, name')
+        .select('id, name, ram, core')
         .eq('user_id', userId)
         .eq('ip', ip)
         .maybeSingle();
@@ -157,17 +162,18 @@ export async function saveOrUpdateMachine(userId, apiKey, machineInfo) {
 
       if (machineByIp) {
         existingMachine = machineByIp;
+        console.log(`Found machine by IP: ${machineByIp.name} (ID: ${machineByIp.id})`);
       }
     }
 
-    // 如果没找到，再尝试根据 user_id + name 查找
-    if (!existingMachine) {
+    // 策略2: 如果IP没找到，尝试根据name查找（使用客户端发送的name）
+    if (!existingMachine && machineIdentifier && machineIdentifier !== 'unknown') {
       const { data: machineByName, error: findErrorByName } = await supabase
-      .from('machines')
-        .select('id, name')
-      .eq('user_id', userId)
-      .eq('name', machineIdentifier)
-      .maybeSingle();
+        .from('machines')
+        .select('id, name, ram, core')
+        .eq('user_id', userId)
+        .eq('name', machineIdentifier)
+        .maybeSingle();
 
       if (findErrorByName && findErrorByName.code !== 'PGRST116') {
         return { success: false, error: findErrorByName.message };
@@ -175,6 +181,44 @@ export async function saveOrUpdateMachine(userId, apiKey, machineInfo) {
 
       if (machineByName) {
         existingMachine = machineByName;
+        console.log(`Found machine by name: ${machineByName.name} (ID: ${machineByName.id})`);
+      }
+    }
+
+    // 策略3: 如果还是没找到，尝试根据系统特征匹配（防止IP和name都变化的情况）
+    // 查询该用户的所有Active机器，尝试根据CPU核心数匹配
+    // 注意：这个策略主要用于处理用户重命名machine后，IP也变化的情况
+    if (!existingMachine && cpuCores > 0) {
+      const { data: allMachines, error: findAllError } = await supabase
+        .from('machines')
+        .select('id, name, ram, core, ip')
+        .eq('user_id', userId)
+        .in('status', ['Active', 'Offline']) // 包括Offline状态的机器，因为可能刚离线
+        .limit(20); // 增加查询数量，以防用户有多台机器
+
+      if (!findAllError && allMachines && allMachines.length > 0) {
+        // 尝试匹配CPU核心数
+        // 如果有多台机器CPU核心数相同，优先选择最近活跃的（通过updated_at判断）
+        const machinesWithSameCores = allMachines.filter(m => m.core === cpuCores);
+        
+        if (machinesWithSameCores.length === 1) {
+          // 只有一台机器匹配，使用它
+          existingMachine = machinesWithSameCores[0];
+          console.log(`Matched machine by CPU cores: ${existingMachine.name} (ID: ${existingMachine.id})`);
+        } else if (machinesWithSameCores.length > 1) {
+          // 多台机器CPU核心数相同，需要更精确的匹配
+          // 如果客户端发送的name（系统主机名）与数据库中某台机器的name匹配，优先使用它
+          // 否则，使用第一台（通常是最早创建的）
+          const exactNameMatch = machinesWithSameCores.find(m => m.name === machineIdentifier);
+          if (exactNameMatch) {
+            existingMachine = exactNameMatch;
+            console.log(`Matched machine by CPU cores and name: ${existingMachine.name} (ID: ${existingMachine.id})`);
+          } else {
+            // 如果name也不匹配，说明用户可能重命名了，使用第一台
+            existingMachine = machinesWithSameCores[0];
+            console.log(`Matched machine by CPU cores (multiple matches, using first): ${existingMachine.name} (ID: ${existingMachine.id})`);
+          }
+        }
       }
     }
 
