@@ -9,6 +9,8 @@
 - JWT Session Token管理
 - 心跳机制（保持连接活跃）
 - 实时数据更新
+- **Machine删除检测**：自动检测machine删除并通知客户端
+- **速率限制**：防止认证和消息发送的滥用
 
 ## 安装
 
@@ -89,6 +91,42 @@ npm run dev
   "type": "pong"
 }
 ```
+
+**Machine删除通知：**
+```json
+{
+  "type": "machine_deleted",
+  "message": "Your machine has been deleted. Please re-authenticate."
+}
+```
+
+## 新功能说明
+
+### Machine删除检测
+
+服务器会在每次心跳时检查machine是否仍然存在于数据库中。如果检测到machine被删除：
+1. 服务器会发送 `machine_deleted` 消息给客户端
+2. 客户端收到消息后会：
+   - 清除本地保存的API Key
+   - 退出程序
+   - 提示用户重新启动并输入新的API Key
+
+### 速率限制
+
+服务器实现了速率限制功能，防止滥用：
+
+- **认证请求限制**：每分钟最多5次认证尝试
+- **消息发送限制**：每秒最多10条消息
+
+如果超过限制，服务器会返回错误消息：
+```json
+{
+  "type": "error",
+  "message": "Rate limit exceeded. Too many authentication attempts. Please try again later."
+}
+```
+
+速率限制基于客户端IP地址进行跟踪。
 
 
 

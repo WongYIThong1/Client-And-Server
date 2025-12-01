@@ -1,7 +1,8 @@
-import { authenticatedConnections, cleanupConnection, clientSystemInfo } from '../stores.js';
-import { setMachineOffline, checkPlanExpired } from '../supabase.js';
+import { authenticatedConnections, cleanupConnection, clientSystemInfo, clientIPs } from '../stores.js';
+import { setMachineOffline, checkPlanExpired, checkMachineExists } from '../supabase.js';
 import { handleAuth, handleRefreshToken, handleTokenAuth, checkAndRefreshToken } from '../auth/handlers.js';
 import { handleSystemInfo, handleData, handleDisconnect } from './handlers.js';
+import { isRateLimited, getClientIP, getRemainingRequests } from '../utils/rateLimiter.js';
 
 /**
  * 处理WebSocket消息
@@ -12,6 +13,32 @@ import { handleSystemInfo, handleData, handleDisconnect } from './handlers.js';
 export async function handleMessage(ws, connectionState, message) {
   try {
     const data = JSON.parse(message.toString());
+    const clientIP = getClientIP(ws, clientIPs);
+
+    // 速率限制检查
+    if (data.type === 'auth') {
+      // 认证请求速率限制
+      if (isRateLimited(clientIP, 'auth')) {
+        const remaining = getRemainingRequests(clientIP, 'auth');
+        ws.send(JSON.stringify({
+          type: 'error',
+          message: `Rate limit exceeded. Too many authentication attempts. Please try again later.`
+        }));
+        console.log(`Rate limit exceeded for auth from IP: ${clientIP}`);
+        return;
+      }
+    } else {
+      // 普通消息速率限制
+      if (isRateLimited(clientIP, 'message')) {
+        const remaining = getRemainingRequests(clientIP, 'message');
+        ws.send(JSON.stringify({
+          type: 'error',
+          message: `Rate limit exceeded. Too many messages. Please slow down.`
+        }));
+        console.log(`Rate limit exceeded for messages from IP: ${clientIP}`);
+        return;
+      }
+    }
 
     // 处理认证请求
     const authResult = await handleAuth(ws, data);
@@ -139,6 +166,17 @@ export function handleError(ws, error, connectionState) {
  */
 export function setupConnection(ws) {
   
+  // 保存客户端IP地址
+  let clientIP = 'unknown';
+  if (ws._socket && ws._socket.remoteAddress) {
+    clientIP = ws._socket.remoteAddress;
+  } else if (ws.upgradeReq && ws.upgradeReq.socket && ws.upgradeReq.socket.remoteAddress) {
+    clientIP = ws.upgradeReq.socket.remoteAddress;
+  } else if (ws._req && ws._req.socket && ws._req.socket.remoteAddress) {
+    clientIP = ws._req.socket.remoteAddress;
+  }
+  clientIPs.set(ws, clientIP);
+  
   const connectionState = {
     isAuthenticated: false
   };
@@ -161,6 +199,31 @@ export function setupConnection(ws) {
     }
     ws.isAlive = false;
     await checkAndRefreshToken(ws).catch(() => {});
+    
+    // 检查machine是否被删除
+    const connInfo = authenticatedConnections.get(ws);
+    const sysInfo = clientSystemInfo.get(ws);
+    if (connInfo && sysInfo && connInfo.userId) {
+      const machineIdentifier = (sysInfo.machineName && sysInfo.machineName !== 'unknown') 
+        ? sysInfo.machineName 
+        : (sysInfo.ip && sysInfo.ip !== 'unknown' ? sysInfo.ip : null);
+      
+      if (machineIdentifier) {
+        const machineCheck = await checkMachineExists(connInfo.userId, machineIdentifier);
+        if (!machineCheck.exists) {
+          console.log(`Machine ${machineIdentifier} deleted for user ${connInfo.userId}, closing connection`);
+          ws.send(JSON.stringify({
+            type: 'machine_deleted',
+            message: 'Your machine has been deleted. Please re-authenticate.'
+          }));
+          setTimeout(() => {
+            ws.close();
+          }, 100);
+          return;
+        }
+      }
+    }
+    
     ws.ping();
   }, HEARTBEAT_INTERVAL_MS);
 

@@ -87,6 +87,19 @@ func SetupMessageHandler() MessageHandler {
 			conn.Close()
 			os.Exit(1)
 
+		case "machine_deleted":
+			fmt.Printf("\n%s%sMachine Deleted%s\n", utils.ColorRed, utils.ColorBold, utils.ColorReset)
+			fmt.Printf("%s\n", msg.Message)
+			fmt.Println("Clearing saved API Key...")
+			if err := auth.DeleteAPIKey(); err != nil {
+				log.Printf("Failed to delete local API Key: %v", err)
+			} else {
+				fmt.Println("[Local API Key removed]")
+			}
+			fmt.Println("Please restart the client and re-enter your API Key.")
+			conn.Close()
+			os.Exit(1)
+
 		case "error":
 			fmt.Printf("\n[Error] %s\n", msg.Message)
 

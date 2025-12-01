@@ -360,5 +360,36 @@ export async function setMachineOffline(userId, machineName) {
   }
 }
 
+/**
+ * 检查machine是否存在
+ * @param {string} userId - 用户ID
+ * @param {string} machineName - 电脑名字（机器标识）
+ * @returns {Promise<{exists: boolean, error?: string}>}
+ */
+export async function checkMachineExists(userId, machineName) {
+  try {
+    if (!userId || !machineName) {
+      return { exists: false };
+    }
+
+    const { data, error } = await supabase
+      .from('machines')
+      .select('id')
+      .eq('user_id', userId)
+      .eq('name', machineName)
+      .maybeSingle();
+
+    if (error && error.code !== 'PGRST116') {
+      console.error('Error checking machine existence:', error);
+      return { exists: false, error: error.message };
+    }
+
+    return { exists: !!data };
+  } catch (error) {
+    console.error('Error in checkMachineExists:', error);
+    return { exists: false, error: error.message };
+  }
+}
+
 export default supabase;
 

@@ -26,6 +26,8 @@
 - ✅ JWT Session Token管理
 - ✅ 心跳机制（保持连接活跃）
 - ✅ 实时数据推送
+- ✅ **Machine删除检测**：自动检测并通知客户端
+- ✅ **速率限制**：防止认证和消息滥用
 
 ### 客户端
 - ✅ 连接状态检查
@@ -34,6 +36,7 @@
 - ✅ Session Token管理
 - ✅ 心跳机制响应
 - ✅ 实时数据接收
+- ✅ **Machine删除处理**：自动清除API Key并退出
 
 ## 快速开始
 
@@ -135,6 +138,21 @@ go run main.go
   "type": "pong"
 }
 ```
+
+### Machine删除通知
+
+**服务器 → 客户端：**
+```json
+{
+  "type": "machine_deleted",
+  "message": "Your machine has been deleted. Please re-authenticate."
+}
+```
+
+当服务器检测到machine被删除时，会发送此消息。客户端收到后会：
+1. 清除本地保存的API Key
+2. 退出程序
+3. 提示用户重新启动并输入新的API Key
 
 ## 数据库要求
 
