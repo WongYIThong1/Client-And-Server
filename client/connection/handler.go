@@ -40,6 +40,12 @@ func SetupMessageHandler() MessageHandler {
 			fmt.Printf("Refresh Token (7d): %s...\n", refreshToken[:preview])
 			fmt.Println("Ready for data exchange...")
 
+			// 获取或生成 HWID
+			hwid, err := auth.GetOrGenerateHWID()
+			if err != nil {
+				log.Printf("Failed to get or generate HWID: %v", err)
+			}
+
 			ip, ram, cores, machineName := utils.GetSystemInfo()
 			systemInfoMsg := Message{
 				Type:        "system_info",
@@ -47,11 +53,16 @@ func SetupMessageHandler() MessageHandler {
 				RAM:         ram,
 				CPUCores:    cores,
 				MachineName: machineName,
+				HWID:        hwid,
 			}
 			if err := SendMessage(conn, systemInfoMsg); err != nil {
 				log.Printf("failed to send system info: %v", err)
 			} else {
+				if hwid != "" {
+					fmt.Printf("\n[System info sent] IP: %s, RAM: %s, CPU cores: %d, Hostname: %s, HWID: %s\n", ip, ram, cores, machineName, hwid[:16]+"...")
+			} else {
 				fmt.Printf("\n[System info sent] IP: %s, RAM: %s, CPU cores: %d, Hostname: %s\n", ip, ram, cores, machineName)
+				}
 			}
 
 		case "system_info_received":

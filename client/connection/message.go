@@ -21,6 +21,7 @@ type Message struct {
 	RAM          string      `json:"ram,omitempty"`
 	CPUCores     int         `json:"cpuCores,omitempty"`
 	MachineName  string      `json:"machineName,omitempty"`
+	HWID         string      `json:"hwid,omitempty"`
 }
 
 // SendMessage 发送消息到服务器

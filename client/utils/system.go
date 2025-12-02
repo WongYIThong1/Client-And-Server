@@ -1,11 +1,14 @@
 package utils
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"math"
 	"net"
 	"os"
 	"runtime"
+	"strings"
 
 	"github.com/shirou/gopsutil/v3/mem"
 )
@@ -43,6 +46,47 @@ func GetMachineName() string {
 		return "unknown"
 	}
 	return name
+}
+
+// GetHWID 生成硬件ID（基于MAC地址、CPU核心数、主机名）
+func GetHWID() string {
+	var components []string
+
+	// 获取MAC地址
+	interfaces, err := net.Interfaces()
+	if err == nil {
+		for _, iface := range interfaces {
+			// 跳过回环接口和无效接口
+			if iface.Flags&net.FlagLoopback == 0 && iface.Flags&net.FlagUp != 0 {
+				if mac := iface.HardwareAddr.String(); mac != "" {
+					components = append(components, mac)
+					break // 使用第一个有效的MAC地址
+				}
+			}
+		}
+	}
+
+	// 获取CPU核心数
+	cores := runtime.NumCPU()
+	components = append(components, fmt.Sprintf("cpu%d", cores))
+
+	// 获取主机名
+	hostname, err := os.Hostname()
+	if err == nil && hostname != "" {
+		components = append(components, hostname)
+	}
+
+	// 如果没有任何组件，返回空字符串
+	if len(components) == 0 {
+		return ""
+	}
+
+	// 组合所有组件并生成SHA256哈希
+	combined := strings.Join(components, "|")
+	hash := sha256.Sum256([]byte(combined))
+	hwid := hex.EncodeToString(hash[:])[:32] // 取前32个字符
+
+	return hwid
 }
 
 // GetSystemInfo 获取系统信息

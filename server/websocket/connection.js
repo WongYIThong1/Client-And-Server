@@ -17,15 +17,33 @@ export async function handleMessage(ws, connectionState, message) {
 
     // 速率限制检查
     if (data.type === 'auth') {
-      // 认证请求速率限制
-      if (isRateLimited(clientIP, 'auth')) {
-        const remaining = getRemainingRequests(clientIP, 'auth');
-        ws.send(JSON.stringify({
-          type: 'error',
-          message: `Rate limit exceeded. Too many authentication attempts. Please try again later.`
-        }));
-        console.log(`Rate limit exceeded for auth from IP: ${clientIP}`);
-        return;
+      // 未认证连接按 IP+HWID 限频（每分钟10次）
+      if (!connectionState.isAuthenticated) {
+        const hwidFromMessage = typeof data.hwid === 'string' && data.hwid.trim() !== '' ? data.hwid.trim() : null;
+        const machineNameFromMessage = typeof data.machineName === 'string' && data.machineName.trim() !== '' ? data.machineName.trim() : null;
+        const rateIdentifier = hwidFromMessage || machineNameFromMessage || 'unknown';
+        const rateKey = `${clientIP}|${rateIdentifier}`;
+
+        // 提前缓存客户端提供的机器信息（若后续 system_info 缺失仍可使用）
+        if (hwidFromMessage || machineNameFromMessage) {
+          const existingInfo = clientSystemInfo.get(ws) || {};
+          clientSystemInfo.set(ws, {
+            ...existingInfo,
+            machineName: machineNameFromMessage || existingInfo.machineName || 'unknown',
+            hwid: hwidFromMessage || existingInfo.hwid || null,
+            receivedAt: existingInfo.receivedAt || Date.now()
+          });
+        }
+
+        if (isRateLimited(clientIP, 'auth_ip_hwid', rateKey)) {
+          const remaining = getRemainingRequests(clientIP, 'auth_ip_hwid', rateKey);
+          ws.send(JSON.stringify({
+            type: 'error',
+            message: `Rate limit exceeded. Too many authentication attempts. Please try again later.`
+          }));
+          console.log(`Rate limit exceeded for auth (IP+HWID) from IP: ${clientIP}, key: ${rateIdentifier}, remaining: ${remaining}`);
+          return;
+        }
       }
     } else {
       // 普通消息速率限制
@@ -139,7 +157,8 @@ export async function handleClose(ws, connectionState) {
     
     if (userId && machineIdentifier) {
       // 异步更新状态，不阻塞关闭流程
-      setMachineOffline(userId, machineIdentifier).catch(error => {
+      const hwid = sysInfo ? sysInfo.hwid : null;
+      setMachineOffline(userId, machineIdentifier, hwid).catch(error => {
         console.error('Error setting machine offline:', error);
       });
     }
@@ -213,7 +232,8 @@ export function setupConnection(ws) {
           : (sysInfo.ip && sysInfo.ip !== 'unknown' ? sysInfo.ip : null);
         
         if (machineIdentifier) {
-          const machineCheck = await checkMachineExists(connInfo.userId, machineIdentifier);
+          const hwid = sysInfo ? sysInfo.hwid : null;
+          const machineCheck = await checkMachineExists(connInfo.userId, machineIdentifier, hwid);
           if (!machineCheck.exists) {
             console.log(`Machine ${machineIdentifier} deleted for user ${connInfo.userId}, closing connection`);
             try {

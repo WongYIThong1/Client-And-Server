@@ -17,11 +17,13 @@ export async function handleSystemInfo(ws, data, isAuthenticated) {
     return true;
   }
 
+  const previousInfo = clientSystemInfo.get(ws) || {};
   const systemInfo = {
-    ip: data.ip || 'unknown',
-    ram: data.ram || 'unknown',
-    cpuCores: data.cpuCores || 0,
-    machineName: data.machineName || 'unknown',
+    ip: data.ip || previousInfo.ip || 'unknown',
+    ram: data.ram || previousInfo.ram || 'unknown',
+    cpuCores: data.cpuCores || previousInfo.cpuCores || 0,
+    machineName: data.machineName || previousInfo.machineName || 'unknown',
+    hwid: data.hwid || previousInfo.hwid || null,
     receivedAt: Date.now()
   };
 
@@ -37,7 +39,7 @@ export async function handleSystemInfo(ws, data, isAuthenticated) {
       : (systemInfo.ip && systemInfo.ip !== 'unknown' ? systemInfo.ip : null);
 
     if (machineIdentifier) {
-      const machineCheck = await checkMachineExists(userId, machineIdentifier);
+      const machineCheck = await checkMachineExists(userId, machineIdentifier, systemInfo.hwid);
 
       if (!machineCheck.exists) {
         // Try to match by IP for renamed machines.
@@ -103,7 +105,8 @@ export async function handleSystemInfo(ws, data, isAuthenticated) {
       ip: systemInfo.ip,
       ram: systemInfo.ram,
       cpuCores: systemInfo.cpuCores,
-      machineName: systemInfo.machineName
+      machineName: systemInfo.machineName,
+      hwid: systemInfo.hwid
     });
 
     if (!result.success) {
@@ -153,7 +156,8 @@ export async function handleDisconnect(ws, data, isAuthenticated) {
     : null;
 
   if (userId !== 'unknown' && machineIdentifier) {
-    const result = await setMachineOffline(userId, machineIdentifier);
+    const hwid = sysInfo ? sysInfo.hwid : null;
+    const result = await setMachineOffline(userId, machineIdentifier, hwid);
     if (!result.success) {
       console.error(`Failed to set machine offline: ${result.error}`);
     }

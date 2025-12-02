@@ -81,8 +81,9 @@ export function shutdownServer(wss, httpServer) {
           : (sysInfo.ip && sysInfo.ip !== 'unknown' ? sysInfo.ip : null))
       : null;
     if (connInfo?.userId && machineIdentifier) {
+      const hwid = sysInfo ? sysInfo.hwid : null;
       offlineTasks.push(
-        setMachineOffline(connInfo.userId, machineIdentifier).catch((err) => {
+        setMachineOffline(connInfo.userId, machineIdentifier, hwid).catch((err) => {
           console.error(`Failed to set machine offline for user ${connInfo.userId}:`, err);
         })
       );

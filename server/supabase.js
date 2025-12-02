@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import dotenv from 'dotenv';
+import crypto from 'crypto';
 
 dotenv.config();
 
@@ -69,27 +70,40 @@ export async function verifyApiKey(apiKey) {
       return { valid: false };
     }
 
-    // 直接查询所有用户然后在代码中过滤（绕过 Supabase .eq() 查询问题）
-    const { data: allUsers, error: fetchError } = await supabase
+    // ✅ 修复：使用索引查询，只查询匹配的记录（而不是查询所有用户）
+    // 先尝试使用 .eq() 查询
+    const { data: user, error: queryError } = await supabase
       .from("users")
-      .select("id, status, apikey, expires_at");
+      .select("id, status, expires_at")
+      .eq("apikey", cleanApiKey)
+      .maybeSingle();
 
-    if (fetchError) {
-      console.error("Error fetching users:", fetchError.message);
-      return { valid: false };
-    }
+    // 如果 .eq() 查询失败（可能是 Supabase 的已知问题），使用备选方案
+    if (queryError || !user) {
+      // 备选方案：查询所有用户并在内存中匹配（保留原逻辑作为后备）
+      // 注意：这仍然有性能问题，但至少不会因为查询失败而完全无法工作
+      const { data: allUsers, error: fetchError } = await supabase
+        .from("users")
+        .select("id, status, apikey, expires_at");
 
-    if (!allUsers || allUsers.length === 0) {
-      return { valid: false };
-    }
+      if (fetchError) {
+        console.error("Error fetching users:", fetchError.message);
+        return { valid: false };
+      }
 
-    // 在代码中查找匹配的 API Key（使用 trim 确保没有空格问题）
-    const matchedUser = allUsers.find(user => {
-      if (!user.apikey) return false;
-      return user.apikey.trim() === cleanApiKey.trim();
-    });
+      if (!allUsers || allUsers.length === 0) {
+        return { valid: false };
+      }
 
-    if (matchedUser) {
+      const matchedUser = allUsers.find(u => {
+        if (!u.apikey) return false;
+        return u.apikey.trim() === cleanApiKey.trim();
+      });
+
+      if (!matchedUser) {
+        return { valid: false };
+      }
+
       // 检查用户状态
       if (matchedUser.status !== "Active") {
         return { valid: false };
@@ -102,19 +116,48 @@ export async function verifyApiKey(apiKey) {
         if (expiresAt < now) {
           return { valid: false, planExpired: true };
         }
-    }
+      }
 
-      console.log(`API Key verified: user ${matchedUser.id}`);
+      console.log(`API Key verified: user ${matchedUser.id} (using fallback method)`);
       return { valid: true, userId: matchedUser.id };
     }
+
+    // ✅ 使用索引查询成功的情况
+    // 检查用户状态
+    if (user.status !== "Active") {
+      return { valid: false };
+    }
     
-    return { valid: false };
+    // 检查 plan 是否过期
+    if (user.expires_at) {
+      const expiresAt = new Date(user.expires_at);
+      const now = new Date();
+      if (expiresAt < now) {
+        return { valid: false, planExpired: true };
+      }
+    }
+
+    console.log(`API Key verified: user ${user.id}`);
+    return { valid: true, userId: user.id };
   } catch (error) {
     console.error("Error verifying API key:", error);
     return { valid: false };
   }
 }
 
+
+/**
+ * 生成 HWID（服务器端 fallback）
+ * @param {string} userId - 用户ID
+ * @param {string} ip - IP地址
+ * @param {string} machineName - 机器名称
+ * @returns {string} HWID
+ */
+function generateHWID(userId, ip, machineName) {
+  const combined = `${userId}||${ip || ''}||${machineName || ''}`;
+  const hash = crypto.createHash('sha256').update(combined).digest('hex');
+  return hash.substring(0, 32); // 取前32个字符
+}
 
 /**
  * 保存或更新机器信息到machines表
@@ -124,6 +167,7 @@ export async function verifyApiKey(apiKey) {
  * @param {string} machineInfo.ip - IP地址
  * @param {string} machineInfo.ram - 内存信息
  * @param {number} machineInfo.cpuCores - CPU核心数
+ * @param {string} machineInfo.hwid - 硬件ID（可选）
  * @returns {Promise<{success: boolean, error?: string}>}
  */
 export async function saveOrUpdateMachine(userId, apiKey, machineInfo) {
@@ -132,7 +176,14 @@ export async function saveOrUpdateMachine(userId, apiKey, machineInfo) {
       return { success: false, error: 'Invalid parameters' };
     }
 
-    const { ip, ram, cpuCores, machineName } = machineInfo;
+    const { ip, ram, cpuCores, machineName, hwid } = machineInfo;
+    
+    // 如果客户端没有提供 hwid，服务器端自动生成一个
+    let finalHWID = hwid;
+    if (!finalHWID || finalHWID.trim() === '') {
+      finalHWID = generateHWID(userId, ip, machineName);
+      console.log(`Generated HWID for user ${userId}: ${finalHWID}`);
+    }
 
     // 使用电脑名字作为机器标识（如果为空或unknown，则使用IP作为备用）
     const machineIdentifier = (machineName && machineName !== 'unknown') ? machineName : (ip || 'unknown');
@@ -141,13 +192,33 @@ export async function saveOrUpdateMachine(userId, apiKey, machineInfo) {
       return { success: false, error: 'Cannot identify machine: missing machineName and ip' };
     }
 
-    // 查找策略：
-    // 1. 优先根据 user_id + ip 查找（IP是最稳定的标识）
-    // 2. 如果IP没找到，尝试根据 user_id + name 查找（使用客户端发送的name）
-    // 3. 如果还是没找到，查询该用户的所有机器，尝试根据系统特征匹配（CPU核心数）
+    // 查找策略（优先级从高到低）：
+    // 0. 优先根据 user_id + hwid 查找（HWID是最稳定的标识）
+    // 1. 根据 user_id + ip 查找（保持向后兼容）
+    // 2. 根据 user_id + name 查找（使用客户端发送的name）
+    // 3. 根据 user_id + cpuCores 匹配（辅助匹配）
     let existingMachine = null;
     
-    // 策略1: 根据IP查找
+    // 策略0（最高优先级）: 根据HWID查找
+    if (finalHWID) {
+      const { data: machineByHWID, error: findErrorByHWID } = await supabase
+        .from('machines')
+        .select('id, name, ram, core, hwid')
+        .eq('user_id', userId)
+        .eq('hwid', finalHWID)
+        .maybeSingle();
+
+      if (findErrorByHWID && findErrorByHWID.code !== 'PGRST116') {
+        return { success: false, error: findErrorByHWID.message };
+      }
+
+      if (machineByHWID) {
+        existingMachine = machineByHWID;
+        console.log(`Found machine by HWID: ${machineByHWID.name} (ID: ${machineByHWID.id})`);
+      }
+    }
+    
+    // 策略1: 根据IP查找（向后兼容）
     if (ip && ip !== 'unknown') {
       const { data: machineByIp, error: findErrorByIp } = await supabase
         .from('machines')
@@ -223,13 +294,14 @@ export async function saveOrUpdateMachine(userId, apiKey, machineInfo) {
     }
 
     if (existingMachine) {
-      // 更新现有记录（更新IP、RAM、Core等信息，但保留name字段）
+      // 更新现有记录（更新IP、RAM、Core、HWID等信息，但保留name字段）
       const machineData = {
         user_id: userId,
         apikey: apiKey,
         ip: ip || null, // IP可能会变化，所以更新它
         ram: ram || null,
         core: cpuCores || null,
+        hwid: finalHWID, // 更新或设置 HWID
         // 不更新name字段，保留数据库中的原有值
         status: 'Active',
         last_heartbeat: new Date().toISOString(),
@@ -252,7 +324,7 @@ export async function saveOrUpdateMachine(userId, apiKey, machineInfo) {
 
       return { success: true };
     } else {
-      // 创建新记录（包含电脑名字）
+      // 创建新记录（包含电脑名字和HWID）
       const machineData = {
         user_id: userId,
         apikey: apiKey,
@@ -260,6 +332,7 @@ export async function saveOrUpdateMachine(userId, apiKey, machineInfo) {
         ram: ram || null,
         core: cpuCores || null,
         name: machineIdentifier, // 使用电脑名字或IP作为标识
+        hwid: finalHWID, // 保存 HWID
         status: 'Active',
         last_heartbeat: new Date().toISOString(),
         updated_at: new Date().toISOString()
@@ -338,25 +411,34 @@ async function updateUserMachineName(userId, machineName) {
 /**
  * 更新机器的最后心跳时间
  * @param {string} userId - 用户ID
- * @param {string} machineName - 电脑名字（机器标识）
+ * @param {string} machineIdentifier - 机器标识（优先使用 hwid，否则使用 name）
+ * @param {string} hwid - 硬件ID（可选）
  * @returns {Promise<{success: boolean, error?: string}>}
  */
-export async function updateMachineHeartbeat(userId, machineName) {
+export async function updateMachineHeartbeat(userId, machineIdentifier, hwid = null) {
   try {
-    if (!userId || !machineName) {
+    if (!userId || !machineIdentifier) {
       console.error('Invalid parameters for updateMachineHeartbeat');
       return { success: false, error: 'Invalid parameters' };
     }
 
-    const { error } = await supabase
+    let query = supabase
       .from('machines')
       .update({
         last_heartbeat: new Date().toISOString(),
         status: 'Active',
         updated_at: new Date().toISOString()
       })
-      .eq('user_id', userId)
-      .eq('name', machineName);
+      .eq('user_id', userId);
+
+    // 优先使用 hwid，如果没有则使用 name
+    if (hwid) {
+      query = query.eq('hwid', hwid);
+    } else {
+      query = query.eq('name', machineIdentifier);
+    }
+
+    const { error } = await query;
 
     if (error) {
       console.error('Error updating machine heartbeat:', error);
@@ -373,24 +455,33 @@ export async function updateMachineHeartbeat(userId, machineName) {
 /**
  * 将机器状态更新为离线
  * @param {string} userId - 用户ID
- * @param {string} machineName - 电脑名字（机器标识）
+ * @param {string} machineIdentifier - 机器标识（优先使用 hwid，否则使用 name）
+ * @param {string} hwid - 硬件ID（可选）
  * @returns {Promise<{success: boolean, error?: string}>}
  */
-export async function setMachineOffline(userId, machineName) {
+export async function setMachineOffline(userId, machineIdentifier, hwid = null) {
   try {
-    if (!userId || !machineName) {
+    if (!userId || !machineIdentifier) {
       console.error('Invalid parameters for setMachineOffline');
       return { success: false, error: 'Invalid parameters' };
     }
 
-    const { error } = await supabase
+    let query = supabase
       .from('machines')
       .update({
         status: 'Offline',
         updated_at: new Date().toISOString()
       })
-      .eq('user_id', userId)
-      .eq('name', machineName);
+      .eq('user_id', userId);
+
+    // 优先使用 hwid，如果没有则使用 name
+    if (hwid) {
+      query = query.eq('hwid', hwid);
+    } else {
+      query = query.eq('name', machineIdentifier);
+    }
+
+    const { error } = await query;
 
     if (error) {
       console.error('Error setting machine offline:', error);
@@ -407,21 +498,29 @@ export async function setMachineOffline(userId, machineName) {
 /**
  * 检查machine是否存在
  * @param {string} userId - 用户ID
- * @param {string} machineName - 电脑名字（机器标识）
+ * @param {string} machineIdentifier - 机器标识（优先使用 hwid，否则使用 name）
+ * @param {string} hwid - 硬件ID（可选）
  * @returns {Promise<{exists: boolean, error?: string}>}
  */
-export async function checkMachineExists(userId, machineName) {
+export async function checkMachineExists(userId, machineIdentifier, hwid = null) {
   try {
-    if (!userId || !machineName) {
+    if (!userId || !machineIdentifier) {
       return { exists: false };
     }
 
-    const { data, error } = await supabase
+    let query = supabase
       .from('machines')
       .select('id')
-      .eq('user_id', userId)
-      .eq('name', machineName)
-      .maybeSingle();
+      .eq('user_id', userId);
+
+    // 优先使用 hwid，如果没有则使用 name
+    if (hwid) {
+      query = query.eq('hwid', hwid);
+    } else {
+      query = query.eq('name', machineIdentifier);
+    }
+
+    const { data, error } = await query.maybeSingle();
 
     if (error && error.code !== 'PGRST116') {
       console.error('Error checking machine existence:', error);
