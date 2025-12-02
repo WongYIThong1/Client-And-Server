@@ -236,6 +236,12 @@ func SetupMessageHandler() MessageHandler {
 			// 设置当前连接（用于重连后更新）
 			SetCurrentConnection(conn)
 
+			// 创建取消 context，用于停止任务
+			ctx, cancel := context.WithCancel(context.Background())
+			taskCancelFuncsMutex.Lock()
+			taskCancelFuncs[msg.TaskID] = cancel
+			taskCancelFuncsMutex.Unlock()
+
 			// 跟踪已显示的结果，避免重复显示
 			displayedResults := make(map[string]bool)
 			displayedResultsMutex := &sync.Mutex{}
@@ -250,6 +256,9 @@ func SetupMessageHandler() MessageHandler {
 					lastProgressUpdateMutex.Lock()
 					delete(lastProgressUpdate, msg.TaskID)
 					lastProgressUpdateMutex.Unlock()
+					taskCancelFuncsMutex.Lock()
+					delete(taskCancelFuncs, msg.TaskID)
+					taskCancelFuncsMutex.Unlock()
 				}()
 
 				// 完全按照服务器设置的配置运行
@@ -334,7 +343,7 @@ func SetupMessageHandler() MessageHandler {
 		case "task_pause":
 			// Server requesting to pause a running task
 			fmt.Printf("%s[Task Pausing]%s ID: %s\n", utils.ColorYellow, utils.ColorReset, msg.TaskID)
-			
+
 			// 取消任务
 			taskCancelFuncsMutex.Lock()
 			cancel, exists := taskCancelFuncs[msg.TaskID]
@@ -367,7 +376,7 @@ func SetupMessageHandler() MessageHandler {
 			// Server requesting progress update for a running task (每30秒)
 			// 更新当前连接引用
 			SetCurrentConnection(conn)
-			
+
 			runningTaskMutex.RLock()
 			results, exists := runningTaskResults[msg.TaskID]
 			runningTaskMutex.RUnlock()
