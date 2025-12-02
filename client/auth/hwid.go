@@ -1,6 +1,9 @@
 package auth
 
 import (
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,8 +11,8 @@ import (
 	"websocket-client/utils"
 )
 
-// GetHWIDPath 获取 HWID 文件路径
-func GetHWIDPath() (string, error) {
+// stateDir returns the client state directory (~/.websocket-client).
+func stateDir() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
@@ -18,10 +21,19 @@ func GetHWIDPath() (string, error) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return "", err
 	}
+	return dir, nil
+}
+
+// GetHWIDPath returns the path that stores the HWID.
+func GetHWIDPath() (string, error) {
+	dir, err := stateDir()
+	if err != nil {
+		return "", err
+	}
 	return filepath.Join(dir, "hwid.txt"), nil
 }
 
-// SaveHWID 保存 HWID 到本地文件
+// SaveHWID writes HWID to disk.
 func SaveHWID(hwid string) error {
 	path, err := GetHWIDPath()
 	if err != nil {
@@ -30,7 +42,7 @@ func SaveHWID(hwid string) error {
 	return os.WriteFile(path, []byte(hwid), 0600)
 }
 
-// LoadHWID 从本地文件加载 HWID
+// LoadHWID loads stored HWID; returns empty string if not present.
 func LoadHWID() (string, error) {
 	path, err := GetHWIDPath()
 	if err != nil {
@@ -46,32 +58,82 @@ func LoadHWID() (string, error) {
 	return strings.TrimSpace(string(data)), nil
 }
 
-// GetOrGenerateHWID 获取或生成 HWID
-// 如果本地有保存的 HWID，则返回保存的；否则生成新的并保存
+// GetOrGenerateHWID returns saved HWID or generates and stores a new one.
 func GetOrGenerateHWID() (string, error) {
-	// 尝试加载已保存的 HWID
 	savedHWID, err := LoadHWID()
 	if err != nil {
 		return "", err
 	}
-
-	// 如果已有保存的 HWID，直接返回
 	if savedHWID != "" {
 		return savedHWID, nil
 	}
 
-	// 生成新的 HWID
-	hwid := utils.GetHWID()
-	if hwid == "" {
-		// 如果生成失败，返回错误
+	base := utils.GetHWID()
+	if base == "" {
 		return "", nil
 	}
 
-	// 保存新生成的 HWID
+	salt, err := loadOrCreateSalt()
+	if err != nil {
+		return "", err
+	}
+	combined := base + "|" + salt
+	sum := sha256.Sum256([]byte(combined))
+	hwid := hex.EncodeToString(sum[:])[:32]
+
 	if err := SaveHWID(hwid); err != nil {
 		return "", err
 	}
-
 	return hwid, nil
 }
 
+// DeleteHWID removes stored HWID and its salt to force regeneration.
+func DeleteHWID() error {
+	hwidPath, err := GetHWIDPath()
+	if err != nil {
+		return err
+	}
+	_ = os.Remove(hwidPath)
+
+	saltPath, err := getHWIDSaltPath()
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(saltPath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+func getHWIDSaltPath() (string, error) {
+	dir, err := stateDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "hwid_salt.txt"), nil
+}
+
+// loadOrCreateSalt returns a persistent random salt for HWID generation.
+func loadOrCreateSalt() (string, error) {
+	path, err := getHWIDSaltPath()
+	if err != nil {
+		return "", err
+	}
+	data, err := os.ReadFile(path)
+	if err == nil {
+		return strings.TrimSpace(string(data)), nil
+	}
+	if !os.IsNotExist(err) {
+		return "", err
+	}
+
+	buf := make([]byte, 8)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	salt := hex.EncodeToString(buf)
+	if err := os.WriteFile(path, []byte(salt), 0600); err != nil {
+		return "", err
+	}
+	return salt, nil
+}

@@ -1,7 +1,7 @@
-import { authenticatedConnections, cleanupConnection, clientSystemInfo, clientIPs } from '../stores.js';
-import { setMachineOffline, checkPlanExpired, checkMachineExists } from '../supabase.js';
+import { authenticatedConnections, cleanupConnection, clientSystemInfo, clientIPs, runningTasks } from '../stores.js';
+import { setMachineOffline, checkPlanExpired, checkMachineExists, removeMachineName, pauseRunningTasksForMachine } from '../supabase.js';
 import { handleAuth, handleRefreshToken, handleTokenAuth, checkAndRefreshToken } from '../auth/handlers.js';
-import { handleSystemInfo, handleData, handleDisconnect } from './handlers.js';
+import { handleSystemInfo, handleData, handleDisconnect, handleTaskProgress } from './handlers.js';
 import { isRateLimited, getClientIP, getRemainingRequests } from '../utils/rateLimiter.js';
 
 /**
@@ -122,6 +122,11 @@ export async function handleMessage(ws, connectionState, message) {
       return;
     }
 
+    // 处理任务进度消息
+    if (await handleTaskProgress(ws, data, connectionState.isAuthenticated)) {
+      return;
+    }
+
     // 处理data消息
     if (handleData(ws, data)) {
       return;
@@ -149,6 +154,7 @@ export async function handleClose(ws, connectionState) {
   
   if (connInfo && sysInfo) {
     const userId = connInfo.userId;
+    const machineId = connInfo.machineId;
     
     // 使用电脑名字作为机器标识（如果为空或unknown，则使用IP作为备用）
     const machineIdentifier = (sysInfo.machineName && sysInfo.machineName !== 'unknown') 
@@ -161,6 +167,13 @@ export async function handleClose(ws, connectionState) {
       setMachineOffline(userId, machineIdentifier, hwid).catch(error => {
         console.error('Error setting machine offline:', error);
       });
+
+      // 如果有绑定的 machineId，将该机器上运行中的任务标记为 paused
+      if (machineId) {
+        pauseRunningTasksForMachine(userId, machineId).catch(error => {
+          console.error('Error pausing running tasks for machine on close:', error);
+        });
+      }
     }
   }
   
@@ -207,8 +220,45 @@ export function setupConnection(ws) {
   });
 
   const HEARTBEAT_INTERVAL_MS = 30000;
+  const PROGRESS_REQUEST_INTERVAL_MS = 30000; // 每30秒请求一次进度
   let heartbeatCount = 0; // 心跳计数器，用于控制machine检查频率
   const MACHINE_CHECK_INTERVAL = 2; // 每2次心跳（60秒）检查一次machine
+  
+  // 进度请求定时器：每30秒向客户端请求运行中任务的进度
+  const progressRequestInterval = setInterval(() => {
+    if (ws.readyState === ws.CLOSED || ws.readyState === ws.CLOSING) {
+      return;
+    }
+    
+    const connInfo = authenticatedConnections.get(ws);
+    if (!connInfo || !connInfo.userId) {
+      return;
+    }
+
+    // 查找该连接上的所有运行中任务
+    for (const [taskId, taskInfo] of runningTasks.entries()) {
+      if (taskInfo.ws === ws && taskInfo.userId === connInfo.userId) {
+        // 检查是否到了请求时间（每30秒）
+        const now = Date.now();
+        if (!taskInfo.lastProgressRequest || (now - taskInfo.lastProgressRequest) >= PROGRESS_REQUEST_INTERVAL_MS) {
+          try {
+            ws.send(JSON.stringify({
+              type: 'task_progress_request',
+              taskId: taskId
+            }));
+            runningTasks.set(taskId, {
+              ...taskInfo,
+              lastProgressRequest: now
+            });
+            console.log(`[progress] Requested progress for task ${taskId}`);
+          } catch (error) {
+            console.error(`[progress] Failed to request progress for task ${taskId}:`, error);
+          }
+        }
+      }
+    }
+  }, PROGRESS_REQUEST_INTERVAL_MS);
+
   const heartbeatInterval = setInterval(async () => {
     if (ws.readyState === ws.CLOSED || ws.readyState === ws.CLOSING) {
       return;
@@ -237,6 +287,7 @@ export function setupConnection(ws) {
           if (!machineCheck.exists) {
             console.log(`Machine ${machineIdentifier} deleted for user ${connInfo.userId}, closing connection`);
             try {
+              await removeMachineName(connInfo.userId, machineIdentifier).catch(() => {});
               // 发送machine_deleted消息
               const message = JSON.stringify({
                 type: 'machine_deleted',
@@ -280,12 +331,29 @@ export function setupConnection(ws) {
   // 处理连接关闭
   ws.on('close', async () => {
     clearInterval(heartbeatInterval);
+    clearInterval(progressRequestInterval);
+    // 清理该连接上的所有运行中任务
+    const connInfo = authenticatedConnections.get(ws);
+    if (connInfo && connInfo.userId) {
+      for (const [taskId, taskInfo] of runningTasks.entries()) {
+        if (taskInfo.ws === ws && taskInfo.userId === connInfo.userId) {
+          runningTasks.delete(taskId);
+        }
+      }
+    }
     await handleClose(ws, connectionState);
   });
 
   // 处理错误
   ws.on('error', (error) => {
     clearInterval(heartbeatInterval);
+    clearInterval(progressRequestInterval);
+    // 清理该连接上的所有运行中任务
+    for (const [taskId, taskInfo] of runningTasks.entries()) {
+      if (taskInfo.ws === ws) {
+        runningTasks.delete(taskId);
+      }
+    }
     handleError(ws, error, connectionState);
   });
 

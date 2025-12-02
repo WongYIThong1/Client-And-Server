@@ -12,6 +12,8 @@ server/
 ├── auth/                 # 认证相关模块
 │   ├── token.js          # JWT token管理（生成、验证、撤销）
 │   └── handlers.js       # 认证消息处理（auth、refresh_token、token验证）
+├── realtime/             # Supabase Realtime 订阅模块
+│   └── tasks.js          # 监听 tasks 表变更并向客户端派发任务
 └── websocket/            # WebSocket相关模块
     ├── connection.js     # WebSocket连接生命周期管理
     └── handlers.js       # WebSocket消息处理（system_info、heartbeat、data等）
@@ -25,6 +27,13 @@ server/
 - **config.js**: 集中管理所有配置常量（端口、JWT密钥、token过期时间等）
 - **stores.js**: 管理运行时内存数据（已认证连接、客户端系统信息、token黑名单）
 - **server.js**: 创建HTTP/HTTPS服务器和WebSocket服务器，处理服务器生命周期
+
+### Realtime 模块 (realtime/)
+
+- **tasks.js**:
+  - 订阅 Supabase Realtime `public.tasks` 表的 `INSERT` 事件
+  - 根据 `tasks.machine_id` 找到对应的在线 WebSocket 连接
+  - 下发 `task_assigned` 消息到目标机器
 
 ### 认证模块 (auth/)
 

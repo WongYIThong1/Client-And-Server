@@ -22,6 +22,34 @@ type Message struct {
 	CPUCores     int         `json:"cpuCores,omitempty"`
 	MachineName  string      `json:"machineName,omitempty"`
 	HWID         string      `json:"hwid,omitempty"`
+
+	// Task dispatch fields (from server)
+	TaskID     string   `json:"taskId,omitempty"`
+	TaskName   string   `json:"name,omitempty"`
+	ListFile   string   `json:"listFile,omitempty"`
+	ProxyFile  string   `json:"proxyFile,omitempty"`
+	Domains       []string `json:"domains,omitempty"`
+	CompletedCount int      `json:"completedCount,omitempty"`
+	TotalCount     int      `json:"totalCount,omitempty"`
+	Threads        int      `json:"threads,omitempty"`
+	Worker         int      `json:"worker,omitempty"`
+	Timeout        string   `json:"timeout,omitempty"`
+
+	// Task progress reporting (client -> server)
+	Progress      int           `json:"progress,omitempty"`
+	Status        string        `json:"status,omitempty"`
+	Results       []URLResult   `json:"results,omitempty"`
+	IsPeriodicUpdate bool       `json:"isPeriodicUpdate,omitempty"` // 标记是否是30秒定期更新
+}
+
+// URLResult 表示单个 URL 的检测结果
+type URLResult struct {
+	Domain   string  `json:"domain"`
+	WAF      string  `json:"waf"`
+	Database string  `json:"database"`
+	Rows     int64   `json:"rows"`
+	Status   string  `json:"status"`
+	Progress float64 `json:"progress"`
 }
 
 // SendMessage 发送消息到服务器

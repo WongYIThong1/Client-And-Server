@@ -28,6 +28,7 @@
 - ✅ 实时数据推送
 - ✅ **Machine删除检测**：自动检测并通知客户端
 - ✅ **速率限制**：防止认证和消息滥用
+ - ✅ **任务派发**：监听 `tasks` 表实时变更并将任务推送到指定机器
 
 ### 客户端
 - ✅ 连接状态检查
@@ -37,6 +38,7 @@
 - ✅ 心跳机制响应
 - ✅ 实时数据接收
 - ✅ **Machine删除处理**：自动清除API Key并退出
+ - ✅ **任务文件拉取**：根据任务指令从 Supabase Storage 下载文件并加密保存在本地隐藏目录
 
 ## 快速开始
 
@@ -155,6 +157,27 @@ go run main.go
 3. 提示用户重新启动并输入新的API Key
 
 **注意：** 服务器每60秒检查一次machine是否存在，以优化数据库查询频率。
+
+### 任务派发（Task Dispatch）
+
+**服务器 → 客户端：**
+
+```json
+{
+  "type": "task_assigned",
+  "taskId": "uuid-of-task",
+  "name": "Task Name",
+  "listFile": "https://.../path/to/list-file",
+  "proxyFile": "https://.../path/to/proxy-file"
+}
+```
+
+收到该消息后，客户端会：
+
+1. 在 `%AppData%\\Local\\SQLBots\\tasks/<taskId>/` 下创建目录；
+2. 从 `listFile` / `proxyFile` 提供的 URL 下载内容；
+3. 使用基于本机 HWID 派生出的对称密钥进行 AES-GCM 加密；
+4. 将加密后的二进制文件写入隐藏目录中，文件名为随机值，避免泄露信息。
 
 ## 数据库要求
 
