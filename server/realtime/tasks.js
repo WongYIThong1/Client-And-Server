@@ -1,5 +1,5 @@
 import supabase from '../supabase.js';
-import { authenticatedConnections, clientSystemInfo, runningTasks } from '../stores.js';
+import { authenticatedConnections, clientSystemInfo, runningTasks, taskAssignments } from '../stores.js';
 import { extractTaskSettings } from '../supabase.js';
 
 // 从环境变量中读取 Supabase 基础 URL 和公开存储桶名称
@@ -250,6 +250,8 @@ export function startTaskRealtimeListener() {
           proxyFile: normalizedProxyFile
         };
 
+        taskAssignments.set(taskId, { userId, machineId });
+
         try {
           targetWs.send(JSON.stringify(taskMessage));
           console.log(`[realtime:tasks] Task ${taskId} dispatched to machine ${machineId} (${machine.name || machine.hwid || 'unknown'})`);
@@ -289,11 +291,18 @@ export function startTaskRealtimeListener() {
         let resolvedMachineId = machineId;
         let resolvedUserId = userId;
         const runningInfo = runningTasks.get(taskId);
+        const assignmentInfo = taskAssignments.get(taskId);
         if (!resolvedMachineId && runningInfo?.machineId) {
           resolvedMachineId = runningInfo.machineId;
         }
         if (!resolvedUserId && runningInfo?.userId) {
           resolvedUserId = runningInfo.userId;
+        }
+        if (!resolvedMachineId && assignmentInfo?.machineId) {
+          resolvedMachineId = assignmentInfo.machineId;
+        }
+        if (!resolvedUserId && assignmentInfo?.userId) {
+          resolvedUserId = assignmentInfo.userId;
         }
 
         console.log(`[realtime:tasks] Task ${taskId} deleted, stopping task on machine ${resolvedMachineId || 'unknown'} (user ${resolvedUserId || 'unknown'})`);
@@ -302,6 +311,8 @@ export function startTaskRealtimeListener() {
         if (runningTasks.has(taskId)) {
           runningTasks.delete(taskId);
         }
+        // 删除任务分配缓存
+        taskAssignments.delete(taskId);
 
         if (!resolvedMachineId || !resolvedUserId) {
           // 没有绑定机器或用户信息，只能做到清理服务器内部状态
@@ -551,6 +562,8 @@ export function startTaskRealtimeListener() {
           listFile: normalizedListFile,
           proxyFile: normalizedProxyFile
         };
+
+        taskAssignments.set(taskId, { userId, machineId });
 
         try {
           targetWs.send(JSON.stringify(taskStartMessage));

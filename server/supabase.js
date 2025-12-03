@@ -646,27 +646,27 @@ export async function pauseRunningTasksForMachine(userId, machineId) {
           progress = taskData?.progress || 0;
         } catch {
           progress = 0;
-        }
+      }
       } else {
-        // 计算已完成的数量（status 为 completed 或 failed）
+      // 计算已完成的数量（status 为 completed 或 failed）
         completedCount = taskUrls ? taskUrls.filter(url => 
-          url.status === 'completed' || url.status === 'failed'
-        ).length : 0;
+        url.status === 'completed' || url.status === 'failed'
+      ).length : 0;
 
-        // 计算总域名数量（从 task_url 表获取，如果没有则使用 tasks 表的 progress）
+      // 计算总域名数量（从 task_url 表获取，如果没有则使用 tasks 表的 progress）
         totalUrls = taskUrls ? taskUrls.length : 0;
 
-        // 计算进度百分比
-        if (totalUrls > 0) {
-          progress = Math.round((completedCount / totalUrls) * 100);
-        } else {
-          // 如果没有 task_url 记录，尝试从 tasks.progress 获取
-          const { data: taskData } = await supabase
-            .from('tasks')
-            .select('progress')
-            .eq('id', taskId)
-            .maybeSingle();
-          progress = taskData?.progress || 0;
+      // 计算进度百分比
+      if (totalUrls > 0) {
+        progress = Math.round((completedCount / totalUrls) * 100);
+      } else {
+        // 如果没有 task_url 记录，尝试从 tasks.progress 获取
+        const { data: taskData } = await supabase
+          .from('tasks')
+          .select('progress')
+          .eq('id', taskId)
+          .maybeSingle();
+        progress = taskData?.progress || 0;
         }
       }
 
