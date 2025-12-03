@@ -1,7 +1,7 @@
 import { authenticatedConnections, cleanupConnection, clientSystemInfo, clientIPs, runningTasks } from '../stores.js';
 import { setMachineOffline, checkPlanExpired, checkMachineExists, removeMachineName, pauseRunningTasksForMachine } from '../supabase.js';
 import { handleAuth, handleRefreshToken, handleTokenAuth, checkAndRefreshToken } from '../auth/handlers.js';
-import { handleSystemInfo, handleData, handleDisconnect, handleTaskProgress } from './handlers.js';
+import { handleSystemInfo, handleData, handleDisconnect, handleTaskProgress, handleTaskListInfo } from './handlers.js';
 import { isRateLimited, getClientIP, getRemainingRequests } from '../utils/rateLimiter.js';
 
 /**
@@ -127,6 +127,10 @@ export async function handleMessage(ws, connectionState, message) {
       return;
     }
 
+    if (await handleTaskListInfo(ws, data, connectionState.isAuthenticated)) {
+      return;
+    }
+
     // 处理data消息
     if (handleData(ws, data)) {
       return;
@@ -220,7 +224,9 @@ export function setupConnection(ws) {
   });
 
   const HEARTBEAT_INTERVAL_MS = 30000;
-  const PROGRESS_REQUEST_INTERVAL_MS = 30000; // 每30秒请求一次进度
+  const PROGRESS_REQUEST_INTERVAL_MS = 30000; // 定时器 tick 间隔
+  const FIRST_PROGRESS_DELAY_MS = 30000; // 任务开始后首次请求进度的延迟
+  const NEXT_PROGRESS_DELAY_MS = 60000; // 之后每次请求进度的间隔
   let heartbeatCount = 0; // 心跳计数器，用于控制machine检查频率
   const MACHINE_CHECK_INTERVAL = 2; // 每2次心跳（60秒）检查一次machine
   
@@ -238,9 +244,15 @@ export function setupConnection(ws) {
     // 查找该连接上的所有运行中任务
     for (const [taskId, taskInfo] of runningTasks.entries()) {
       if (taskInfo.ws === ws && taskInfo.userId === connInfo.userId) {
-        // 检查是否到了请求时间（每30秒）
         const now = Date.now();
-        if (!taskInfo.lastProgressRequest || (now - taskInfo.lastProgressRequest) >= PROGRESS_REQUEST_INTERVAL_MS) {
+        const requestCount = typeof taskInfo.progressRequestCount === 'number'
+          ? taskInfo.progressRequestCount
+          : 0;
+
+        // 第一次请求使用 30 秒延迟，之后使用 60 秒间隔
+        const requiredDelay = requestCount === 0 ? FIRST_PROGRESS_DELAY_MS : NEXT_PROGRESS_DELAY_MS;
+
+        if (!taskInfo.lastProgressRequest || (now - taskInfo.lastProgressRequest) >= requiredDelay) {
           try {
             ws.send(JSON.stringify({
               type: 'task_progress_request',
@@ -248,9 +260,10 @@ export function setupConnection(ws) {
             }));
             runningTasks.set(taskId, {
               ...taskInfo,
-              lastProgressRequest: now
+              lastProgressRequest: now,
+              progressRequestCount: requestCount + 1
             });
-            console.log(`[progress] Requested progress for task ${taskId}`);
+            console.log(`[progress] Requested progress for task ${taskId} (count=${requestCount + 1})`);
           } catch (error) {
             console.error(`[progress] Failed to request progress for task ${taskId}:`, error);
           }

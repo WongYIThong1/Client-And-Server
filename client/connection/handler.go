@@ -74,9 +74,17 @@ func SetupMessageHandler() MessageHandler {
 			fmt.Printf("Refresh Token (7d): %s...\n", refreshToken[:preview])
 			fmt.Println("Ready for data exchange...")
 
-			if err := SendSystemInfo(conn); err != nil {
-				log.Printf("Failed to send system info: %v", err)
-			}
+			go func(c *websocket.Conn) {
+				// 重试发送 system_info，直到成功或连接关闭
+				for attempts := 0; attempts < 3; attempts++ {
+					if err := SendSystemInfo(c); err != nil {
+						log.Printf("Failed to send system info (attempt %d): %v", attempts+1, err)
+						time.Sleep(2 * time.Second)
+						continue
+					}
+					break
+				}
+			}(conn)
 
 		case "system_info_received":
 			fmt.Println("[Server acknowledged system info]")
@@ -166,15 +174,24 @@ func SetupMessageHandler() MessageHandler {
 			}
 
 			if msg.ListFile != "" {
-				if path, err := utils.DownloadAndEncryptFile(msg.TaskID, msg.ListFile, hwid); err != nil {
+				if path, lineCount, err := utils.DownloadAndEncryptFile(msg.TaskID, msg.ListFile, hwid); err != nil {
 					log.Printf("Failed to download/encrypt list file for task %s: %v", msg.TaskID, err)
 				} else {
 					log.Printf("List file for task %s stored at %s", msg.TaskID, path)
+					if lineCount > 0 {
+						if err := SendMessage(conn, Message{
+							Type:       "task_list_info",
+							TaskID:     msg.TaskID,
+							TotalLines: lineCount,
+						}); err != nil {
+							log.Printf("Failed to send list line count for task %s: %v", msg.TaskID, err)
+						}
+					}
 				}
 			}
 
 			if msg.ProxyFile != "" {
-				if path, err := utils.DownloadAndEncryptFile(msg.TaskID, msg.ProxyFile, hwid); err != nil {
+				if path, _, err := utils.DownloadAndEncryptFile(msg.TaskID, msg.ProxyFile, hwid); err != nil {
 					log.Printf("Failed to download/encrypt proxy file for task %s: %v", msg.TaskID, err)
 				} else {
 					log.Printf("Proxy file for task %s stored at %s", msg.TaskID, path)
@@ -219,6 +236,22 @@ func SetupMessageHandler() MessageHandler {
 					msg.Worker,
 					msg.Timeout,
 				)
+			}
+
+			taskConfig := utils.TaskConfig{
+				TaskID:           msg.TaskID,
+				Name:             msg.TaskName,
+				Threads:          msg.Threads,
+				Worker:           msg.Worker,
+				Timeout:          msg.Timeout,
+				CompletedCount:   msg.CompletedCount,
+				TotalCount:       msg.TotalCount,
+				RemainingDomains: len(msg.Domains),
+				ListFile:         msg.ListFile,
+				ProxyFile:        msg.ProxyFile,
+			}
+			if err := utils.SaveTaskConfig(msg.TaskID, taskConfig); err != nil {
+				log.Printf("Failed to save config for task %s: %v", msg.TaskID, err)
 			}
 
 			if len(msg.Domains) == 0 {
@@ -341,7 +374,7 @@ func SetupMessageHandler() MessageHandler {
 			}()
 
 		case "task_pause":
-			// Server requesting to pause a running task
+			// Server requesting to pause a running task（任务仍然存在于数据库中，仅临时暂停，不删除本地文件）
 			fmt.Printf("%s[Task Pausing]%s ID: %s\n", utils.ColorYellow, utils.ColorReset, msg.TaskID)
 
 			// 取消任务
@@ -370,6 +403,45 @@ func SetupMessageHandler() MessageHandler {
 						sendTaskProgressUpdate(taskConn, msg.TaskID, results, 0.0)
 					}
 				}
+			}
+
+		case "task_cancel":
+			// Server indicates that the task has been deleted; stop locally and remove encrypted files.
+			fmt.Printf("%s[Task Cancelled]%s ID: %s\n", utils.ColorYellow, utils.ColorReset, msg.TaskID)
+
+			// 取消任务
+			taskCancelFuncsMutex.Lock()
+			cancel, exists := taskCancelFuncs[msg.TaskID]
+			if exists {
+				cancel()
+				delete(taskCancelFuncs, msg.TaskID)
+			}
+			taskCancelFuncsMutex.Unlock()
+
+			// 清理任务状态
+			runningTasksMutex.Lock()
+			delete(runningTasks, msg.TaskID)
+			runningTasksMutex.Unlock()
+
+			// 发送最终进度更新（标记任务已取消，进度不再推进）
+			runningTaskMutex.RLock()
+			results, exists := runningTaskResults[msg.TaskID]
+			runningTaskMutex.RUnlock()
+
+			if exists {
+				taskConn := GetCurrentConnection()
+				if taskConn != nil {
+					if err := taskConn.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(time.Second)); err == nil {
+						sendTaskProgressUpdate(taskConn, msg.TaskID, results, 0.0)
+					}
+				}
+			}
+
+			// 删除本地任务目录（包括加密文件和 config.json）
+			if err := utils.DeleteTaskDir(msg.TaskID); err != nil {
+				log.Printf("Failed to delete local task dir for %s: %v", msg.TaskID, err)
+			} else {
+				fmt.Printf("[Task Cleanup] Local data for task %s has been removed\n", msg.TaskID)
 			}
 
 		case "task_progress_request":

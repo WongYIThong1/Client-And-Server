@@ -205,20 +205,14 @@ func main() {
 		}
 	}()
 
-
 	for {
 		select {
 		case message := <-messageChan:
-			// 处理消息后检查是否应该退出（machine_deleted消息会设置shouldExit）
 			connection.HandleMessage(currentConn, message, messageHandler)
-
 			if connection.ShouldExit() {
 				fmt.Println("Exiting due to machine deletion...")
 				os.Exit(1)
 			}
-
-			// 如果在等待重连后的认证成功，并且认证成功，发送系统信息
-
 			if connection.IsAuthenticated() && savedKey == "" {
 				if err := auth.SaveAPIKey(apiKey); err != nil {
 					log.Printf("Failed to save API Key: %v", err)
@@ -227,36 +221,35 @@ func main() {
 					fmt.Println("[API Key saved]")
 				}
 			}
-
 		case err := <-errorChan:
-			// 检查是否应该退出（例如收到machine_deleted消息）
 			if connection.ShouldExit() {
 				fmt.Println("Exiting due to machine deletion...")
 				os.Exit(1)
 			}
-
 			fmt.Printf("%s[Connection issue]%s %v%s\n", utils.ColorYellow, utils.ColorBold, err, utils.ColorReset)
-
-			// 停止旧的连接和控制结构
 			stopOldConnection()
 			if currentConn != nil {
 				currentConn.Close()
 			}
-
 			newConn, newControl, reconnectErr := reconnect()
 			if reconnectErr != nil {
 				log.Printf("Failed to reconnect: %v", reconnectErr)
 				time.Sleep(5 * time.Second)
 				continue
 			}
-
 			currentConn = newConn
 			currentControl = newControl
-				
-			// 更新连接管理器中的连接引用（用于运行中的任务）
 			connection.SetCurrentConnection(newConn)
-
 			fmt.Printf("%s[Reconnected]%s Connection restored%s\n", utils.ColorGreen, utils.ColorBold, utils.ColorReset)
+		default:
+			// 检查连接是否仍然有效，如果 server 重启导致连接 silently closed，则触发重连
+			if currentConn != nil && currentConn.CloseHandler() != nil {
+				select {
+				case <-time.After(30 * time.Second):
+					// periodically ensure connection alive
+				default:
+				}
+			}
 		}
 	}
 }

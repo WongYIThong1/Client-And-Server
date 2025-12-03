@@ -628,31 +628,46 @@ export async function pauseRunningTasksForMachine(userId, machineId) {
         .select('domains, status, progress')
         .eq('task_id', taskId);
 
-      if (urlQueryError) {
-        console.error(`Error querying task_url for task ${taskId}:`, urlQueryError);
-        continue;
-      }
-
-      // 计算已完成的数量（status 为 completed 或 failed）
-      const completedCount = taskUrls ? taskUrls.filter(url => 
-        url.status === 'completed' || url.status === 'failed'
-      ).length : 0;
-
-      // 计算总域名数量（从 task_url 表获取，如果没有则使用 tasks 表的 progress）
-      const totalUrls = taskUrls ? taskUrls.length : 0;
-
-      // 计算进度百分比
+      let completedCount = 0;
+      let totalUrls = 0;
       let progress = 0;
-      if (totalUrls > 0) {
-        progress = Math.round((completedCount / totalUrls) * 100);
+
+      if (urlQueryError) {
+        // 网络 / 网关错误时，无法从 task_url 统计进度，但仍然要确保任务被标记为 paused，避免“幽灵任务”继续占用配额
+        console.error(`Error querying task_url for task ${taskId}:`, urlQueryError);
+
+        // 回退：尝试从 tasks.progress 获取已有进度；如果也失败则按 0 处理
+        try {
+          const { data: taskData } = await supabase
+            .from('tasks')
+            .select('progress')
+            .eq('id', taskId)
+            .maybeSingle();
+          progress = taskData?.progress || 0;
+        } catch {
+          progress = 0;
+        }
       } else {
-        // 如果没有 task_url 记录，尝试从 tasks.progress 获取
-        const { data: taskData } = await supabase
-          .from('tasks')
-          .select('progress')
-          .eq('id', taskId)
-          .maybeSingle();
-        progress = taskData?.progress || 0;
+        // 计算已完成的数量（status 为 completed 或 failed）
+        completedCount = taskUrls ? taskUrls.filter(url => 
+          url.status === 'completed' || url.status === 'failed'
+        ).length : 0;
+
+        // 计算总域名数量（从 task_url 表获取，如果没有则使用 tasks 表的 progress）
+        totalUrls = taskUrls ? taskUrls.length : 0;
+
+        // 计算进度百分比
+        if (totalUrls > 0) {
+          progress = Math.round((completedCount / totalUrls) * 100);
+        } else {
+          // 如果没有 task_url 记录，尝试从 tasks.progress 获取
+          const { data: taskData } = await supabase
+            .from('tasks')
+            .select('progress')
+            .eq('id', taskId)
+            .maybeSingle();
+          progress = taskData?.progress || 0;
+        }
       }
 
       // 更新任务状态为 paused，并保存进度和恢复信息（明文显示）
@@ -735,6 +750,68 @@ export async function updateTaskProgress(userId, taskId, progress, status, curre
     return { success: true };
   } catch (error) {
     console.error('Error in updateTaskProgress:', error);
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * 在服务器启动时，将所有 status = 'running' 的任务标记为 'paused'。
+ * 用于防止重启后数据库仍然认为任务在跑，但实际机器和 server 的会话都已经断开。
+ * 只修改 status，不改 machine_id 等绑定信息，方便后续按机器自动恢复。
+ * @returns {Promise<void>}
+ */
+export async function pauseAllRunningTasksOnStartup() {
+  try {
+    const { error } = await supabase
+      .from('tasks')
+      .update({
+        status: 'paused',
+        updated_at: new Date().toISOString()
+      })
+      .eq('status', 'running');
+
+    if (error) {
+      console.error('[startup] Failed to pause running tasks on startup:', error);
+    } else {
+      console.log('[startup] All running tasks have been marked as paused');
+    }
+  } catch (error) {
+    console.error('[startup] Error in pauseAllRunningTasksOnStartup:', error);
+  }
+}
+
+/**
+ * 更新任务的 total_url_lines 字段
+ * @param {string} userId
+ * @param {string} taskId
+ * @param {number} totalLines
+ * @returns {Promise<{success: boolean, error?: string}>}
+ */
+export async function updateTaskTotalLines(userId, taskId, totalLines) {
+  try {
+    if (!userId || !taskId) {
+      return { success: false, error: 'Invalid parameters' };
+    }
+
+    if (!Number.isFinite(totalLines) || totalLines < 0) {
+      return { success: false, error: 'Invalid total lines value' };
+    }
+
+    const { error } = await supabase
+      .from('tasks')
+      .update({
+        total_url_lines: totalLines,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', taskId)
+      .eq('user_id', userId);
+
+    if (error) {
+      return { success: false, error: error.message };
+    }
+
+    return { success: true };
+  } catch (error) {
     return { success: false, error: error.message };
   }
 }
@@ -883,6 +960,10 @@ export async function upsertTaskUrlResults(userId, taskId, urlResults) {
           .eq('id', existing.id);
 
         if (updateError) {
+          if (updateError.code === '23503') {
+            console.log(`[task_url] Task ${taskId} no longer exists (update), skip writing url result for ${domain}`);
+            return { success: true };
+          }
           console.error('Error updating task_url:', updateError);
         }
       } else {
@@ -892,6 +973,10 @@ export async function upsertTaskUrlResults(userId, taskId, urlResults) {
           .insert(recordData);
 
         if (insertError) {
+          if (insertError.code === '23503') {
+            console.log(`[task_url] Task ${taskId} no longer exists (insert), skip writing url result for ${domain}`);
+            return { success: true };
+          }
           console.error('Error inserting task_url:', insertError);
         }
       }

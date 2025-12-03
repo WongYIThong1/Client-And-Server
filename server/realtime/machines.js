@@ -1,4 +1,4 @@
-import supabase from '../supabase.js';
+import supabase, { pauseRunningTasksForMachine } from '../supabase.js';
 
 /**
  * Subscribe to Supabase Realtime for machine status updates.
@@ -14,15 +14,38 @@ export function startMachineRealtimeListener() {
         schema: 'public',
         table: 'machines'
       },
-      (payload) => {
+      async (payload) => {
         const { old, new: next, eventType } = payload;
+
         if (eventType === 'UPDATE') {
           const prevStatus = old?.status;
           const nextStatus = next?.status;
+
           if (prevStatus !== nextStatus) {
             console.log(
               `[realtime:machines] Machine ${next.id} status ${prevStatus} -> ${nextStatus} (user ${next.user_id})`
             );
+
+            // 当机器从 Active 变为 Offline（或其他非 Active 状态）时，
+            // 将该机器上仍然处于 running 状态的任务全部标记为 paused，防止“幽灵任务”继续占用配额。
+            if (prevStatus === 'Active' && nextStatus && nextStatus !== 'Active') {
+              try {
+                const userId = next.user_id;
+                const machineId = next.id;
+                const result = await pauseRunningTasksForMachine(userId, machineId);
+                if (!result.success) {
+                  console.error(
+                    `[realtime:machines] Failed to pause running tasks for machine ${machineId}:`,
+                    result.error
+                  );
+                }
+              } catch (error) {
+                console.error(
+                  '[realtime:machines] Error while pausing running tasks for offline machine:',
+                  error
+                );
+              }
+            }
           }
         } else {
           console.log('[realtime:machines] change:', {

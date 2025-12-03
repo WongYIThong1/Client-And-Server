@@ -261,6 +261,95 @@ export function startTaskRealtimeListener() {
     .on(
       'postgres_changes',
       {
+        event: 'DELETE',
+        schema: 'public',
+        table: 'tasks'
+      },
+      async (payload) => {
+        const deletedTask = payload.old;
+
+        if (!deletedTask) {
+          console.error('[realtime:tasks] Invalid task delete payload:', payload);
+          return;
+        }
+
+        const {
+          id: taskId,
+          machine_id: machineId,
+          user_id: userId
+        } = deletedTask;
+
+        if (!taskId) {
+          console.error('[realtime:tasks] Deleted task has no id:', payload);
+          return;
+        }
+
+        // 有些情况下（例如任务在 server 仍未恢复 machine 绑定就被删除），删除记录里可能没有 machine_id/user_id。
+        // 尝试从 runningTasks 缓存中获取这些信息，确保可以向对应客户端发送取消指令。
+        let resolvedMachineId = machineId;
+        let resolvedUserId = userId;
+        const runningInfo = runningTasks.get(taskId);
+        if (!resolvedMachineId && runningInfo?.machineId) {
+          resolvedMachineId = runningInfo.machineId;
+        }
+        if (!resolvedUserId && runningInfo?.userId) {
+          resolvedUserId = runningInfo.userId;
+        }
+
+        console.log(`[realtime:tasks] Task ${taskId} deleted, stopping task on machine ${resolvedMachineId || 'unknown'} (user ${resolvedUserId || 'unknown'})`);
+
+        // 无论机器是否在线，都先从 runningTasks 中移除，避免继续请求进度
+        if (runningTasks.has(taskId)) {
+          runningTasks.delete(taskId);
+        }
+
+        if (!resolvedMachineId || !resolvedUserId) {
+          // 没有绑定机器或用户信息，只能做到清理服务器内部状态
+          return;
+        }
+
+        try {
+          // 查找对应的 machine 信息
+          const { data: machine, error: machineError } = await supabase
+            .from('machines')
+            .select('id, name, hwid, user_id')
+            .eq('id', resolvedMachineId)
+            .eq('user_id', resolvedUserId)
+            .maybeSingle();
+
+          if (machineError || !machine) {
+            console.error(`[realtime:tasks] Failed to find machine ${resolvedMachineId} for deleted task ${taskId}:`, machineError);
+            return;
+          }
+
+          // 查找对应的 WebSocket 连接
+          let targetWs = findTargetWebSocketForMachine(resolvedUserId, machine);
+
+          if (!targetWs || targetWs.readyState !== 1) {
+            console.log(`[realtime:tasks] No active connection for machine ${resolvedMachineId} when deleting task ${taskId}`);
+            return;
+          }
+
+          // 发送取消消息给客户端，让客户端立刻停止本地任务并删除本地数据
+          const taskCancelMessage = {
+            type: 'task_cancel',
+            taskId
+          };
+
+          try {
+            targetWs.send(JSON.stringify(taskCancelMessage));
+            console.log(`[realtime:tasks] Sent cancel command for deleted task ${taskId} to machine ${resolvedMachineId}`);
+          } catch (error) {
+            console.error(`[realtime:tasks] Failed to send cancel for deleted task ${taskId} to machine ${resolvedMachineId}:`, error);
+          }
+        } catch (error) {
+          console.error('[realtime:tasks] Error handling task delete event:', error);
+        }
+      }
+    )
+    .on(
+      'postgres_changes',
+      {
         event: 'UPDATE',
         schema: 'public',
         table: 'tasks'
@@ -279,7 +368,8 @@ export function startTaskRealtimeListener() {
         const newStatus = updatedTask.status;
 
         // 处理 status 变为 'paused' 的情况
-        if (oldStatus === 'running' && newStatus === 'paused') {
+        // 放宽条件：只要从「非 paused」状态变为「paused」，就发送暂停指令
+        if (newStatus === 'paused' && oldStatus !== 'paused') {
           const {
             id: taskId,
             machine_id: machineId,
@@ -348,6 +438,13 @@ export function startTaskRealtimeListener() {
 
         if (!machineId) {
           console.log(`[realtime:tasks] Task ${taskId} has no machine_id, skipping dispatch`);
+          return;
+        }
+
+        // 如果任务已经在 runningTasks 中，说明已经为该状态发过一次 task_start，
+        // 此次 UPDATE 很可能是重复写入，直接跳过，避免重复日志和资源消耗。
+        if (runningTasks.has(taskId)) {
+          console.log(`[realtime:tasks] Task ${taskId} is already running, skipping duplicate start command`);
           return;
         }
 
@@ -440,12 +537,6 @@ export function startTaskRealtimeListener() {
           return;
         }
 
-        // 检查任务是否已经在运行中，避免重复发送
-        if (runningTasks.has(taskId)) {
-          console.log(`[realtime:tasks] Task ${taskId} is already running, skipping duplicate start command`);
-          return;
-        }
-
         // 构建并发送任务运行消息
         const taskStartMessage = {
           type: 'task_start',
@@ -469,7 +560,9 @@ export function startTaskRealtimeListener() {
           runningTasks.set(taskId, {
             ws: targetWs,
             userId: userId,
-            lastProgressRequest: Date.now()
+            machineId: machineId,
+            lastProgressRequest: Date.now(),
+            progressRequestCount: 0
           });
         } catch (error) {
           console.error(`[realtime:tasks] Failed to send task start command ${taskId} to machine ${machineId}:`, error);

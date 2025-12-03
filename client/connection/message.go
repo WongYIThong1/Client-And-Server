@@ -24,22 +24,23 @@ type Message struct {
 	HWID         string      `json:"hwid,omitempty"`
 
 	// Task dispatch fields (from server)
-	TaskID     string   `json:"taskId,omitempty"`
-	TaskName   string   `json:"name,omitempty"`
-	ListFile   string   `json:"listFile,omitempty"`
-	ProxyFile  string   `json:"proxyFile,omitempty"`
-	Domains       []string `json:"domains,omitempty"`
+	TaskID         string   `json:"taskId,omitempty"`
+	TaskName       string   `json:"name,omitempty"`
+	ListFile       string   `json:"listFile,omitempty"`
+	ProxyFile      string   `json:"proxyFile,omitempty"`
+	Domains        []string `json:"domains,omitempty"`
 	CompletedCount int      `json:"completedCount,omitempty"`
 	TotalCount     int      `json:"totalCount,omitempty"`
 	Threads        int      `json:"threads,omitempty"`
 	Worker         int      `json:"worker,omitempty"`
 	Timeout        string   `json:"timeout,omitempty"`
+	TotalLines     int      `json:"totalLines,omitempty"`
 
 	// Task progress reporting (client -> server)
-	Progress      int           `json:"progress,omitempty"`
-	Status        string        `json:"status,omitempty"`
-	Results       []URLResult   `json:"results,omitempty"`
-	IsPeriodicUpdate bool       `json:"isPeriodicUpdate,omitempty"` // 标记是否是30秒定期更新
+	Progress         int         `json:"progress,omitempty"`
+	Status           string      `json:"status,omitempty"`
+	Results          []URLResult `json:"results,omitempty"`
+	IsPeriodicUpdate bool        `json:"isPeriodicUpdate,omitempty"` // 标记是否是30秒定期更新
 }
 
 // URLResult 表示单个 URL 的检测结果

@@ -1,5 +1,5 @@
 import { authenticatedConnections, clientSystemInfo, runningTasks } from '../stores.js';
-import { saveOrUpdateMachine, updateMachineHeartbeat, updateTaskProgress, upsertTaskUrlResults } from '../supabase.js';
+import { saveOrUpdateMachine, updateMachineHeartbeat, updateTaskProgress, upsertTaskUrlResults, updateTaskTotalLines } from '../supabase.js';
 import supabase from '../supabase.js';
 
 /**
@@ -65,6 +65,36 @@ export async function handleSystemInfo(ws, data, isAuthenticated) {
     }
     if (result.machineId) {
       connInfo.machineId = result.machineId;
+    }
+
+    // 在服务器重启后，客户端重新上报 system_info 时：
+    // 恢复该机器上所有 “running” 状态的任务到内存 runningTasks，保证继续请求进度。
+    // 注意：不再自动恢复 paused 任务，防止用户手动暂停被强制恢复。
+    try {
+      if (connInfo.machineId) {
+        // 恢复 running 状态任务到 runningTasks
+        const { data: running, error: runningError } = await supabase
+          .from('tasks')
+          .select('id, status')
+          .eq('user_id', connInfo.userId)
+          .eq('machine_id', connInfo.machineId)
+          .eq('status', 'running');
+
+        if (!runningError && Array.isArray(running) && running.length > 0) {
+          for (const task of running) {
+            if (!task?.id) continue;
+            runningTasks.set(task.id, {
+              ws,
+              userId: connInfo.userId,
+              machineId: connInfo.machineId || null,
+              lastProgressRequest: Date.now(),
+              progressRequestCount: 0
+            });
+          }
+        }
+      }
+    } catch (e) {
+      console.error('[system_info] Failed to restore running tasks after restart:', e);
     }
 
     ws.send(JSON.stringify({
@@ -262,6 +292,71 @@ export async function handleTaskProgress(ws, data, isAuthenticated) {
     type: 'task_progress_ack',
     taskId,
     progress
+  }));
+
+  return true;
+}
+
+/**
+ * 处理客户端上报的任务列表行数
+ * @param {WebSocket} ws
+ * @param {object} data
+ * @param {boolean} isAuthenticated
+ * @returns {Promise<boolean>}
+ */
+export async function handleTaskListInfo(ws, data, isAuthenticated) {
+  if (data.type !== 'task_list_info') {
+    return false;
+  }
+
+  if (!isAuthenticated) {
+    ws.send(JSON.stringify({
+      type: 'error',
+      message: 'Authentication required before sending task metadata'
+    }));
+    return true;
+  }
+
+  const connInfo = authenticatedConnections.get(ws);
+  if (!connInfo || !connInfo.userId) {
+    ws.send(JSON.stringify({
+      type: 'error',
+      message: 'Connection not authenticated'
+    }));
+    return true;
+  }
+
+  const taskId = data.taskId;
+  const totalLines = Number(data.totalLines);
+
+  if (!taskId) {
+    ws.send(JSON.stringify({
+      type: 'error',
+      message: 'taskId is required for task_list_info'
+    }));
+    return true;
+  }
+
+  if (!Number.isFinite(totalLines) || totalLines < 0) {
+    ws.send(JSON.stringify({
+      type: 'error',
+      message: 'totalLines must be a non-negative number'
+    }));
+    return true;
+  }
+
+  const result = await updateTaskTotalLines(connInfo.userId, taskId, totalLines);
+  if (!result.success) {
+    ws.send(JSON.stringify({
+      type: 'error',
+      message: `Failed to update task metadata: ${result.error || 'Unknown error'}`
+    }));
+    return true;
+  }
+
+  ws.send(JSON.stringify({
+    type: 'task_list_info_ack',
+    taskId
   }));
 
   return true;
